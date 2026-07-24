@@ -1,0 +1,8 @@
+2026-07-21 21:44:01,179 | INFO | Bot version: 2026-07-21-r2 | Name: Apex_Committee_v1
+2026-07-21 21:44:01,182 | INFO | Credential check — key_len=4 key_last4=test | secret_len=4 | paper=True
+2026-07-21 21:44:59,562 | INFO | Bot version: 2026-07-21-r2 | Name: Apex_Committee_v1
+2026-07-21 21:44:59,564 | INFO | Credential check — key_len=4 key_last4=test | secret_len=4 | paper=True
+2026-07-21 21:45:37,095 | INFO | Bot version: 2026-07-21-r2 | Name: Apex_Committee_v1
+2026-07-21 21:45:37,098 | INFO | Credential check — key_len=4 key_last4=test | secret_len=4 | paper=True
+2026-07-21 21:45:37,197 | INFO |    Action scores: {'BUY': 0.58, 'HOLD': 0.0}
+2026-07-21 21:45:37,198 | INFO |    Winner: BUY score=0.580 (regime=UPTREND threshold >0.60)
