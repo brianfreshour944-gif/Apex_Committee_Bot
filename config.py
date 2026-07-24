@@ -70,7 +70,8 @@ fh.setFormatter(formatter)
 logger.addHandler(fh)
 
 BOT_VERSION = "2026-07-21-r2"
-logger.info(f"Bot version: {BOT_VERSION} | Name: {settings.bot_name}")
+BOT_NAME = settings.bot_name
+logger.info(f"Bot version: {BOT_VERSION} | Name: {BOT_NAME}")
 
 # ── Universe ───────────────────────────────────────────────────────────────────
 SYMBOLS = ["BTC/USD", "ETH/USD", "SOL/USD"]
