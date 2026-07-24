@@ -8,13 +8,17 @@ import torch.nn.functional as F
 import numpy as np
 import pandas as pd
 import joblib
+import warnings
 
 from config import logger, MODEL_PATH, SCALER_PATH, SEQUENCE_LEN
 from models import MarketSnapshot, AIDecision
 from feature_engineering import add_features, FEATURE_COLS
 
+# Suppress the scikit-learn version mismatch warning (scaler was fit on 1.6.1)
+warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
-# ── GrokGQA Transformer architecture (matches Grok v8 exactly) ───────────────────
+
+# ── GrokGQA Transformer architecture (matches Grok v8 exactly) ─────────────────
 
 class GQA_TransformerBlock(nn.Module):
     def __init__(self, embed_dim=128, num_q_heads=8, num_kv_heads=2, dropout=0.1):
@@ -84,7 +88,7 @@ class GrokGQA_Transformer(nn.Module):
         return x  # raw logit
 
 
-# ── Transformer Brain Wrapper ──────────────────────────────────────────────────
+# ── Transformer Brain Wrapper ──────────────────────────────────────────
 
 class TransformerBrain:
     def __init__(self):
@@ -105,7 +109,10 @@ class TransformerBrain:
             self._model = model
 
             if os.path.exists(SCALER_PATH):
-                self._scaler = joblib.load(SCALER_PATH)
+                # Suppress version warning while loading
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    self._scaler = joblib.load(SCALER_PATH)
                 logger.info(f"✅ Loaded feature scaler from {SCALER_PATH}")
             
             self._loaded = True
@@ -139,7 +146,9 @@ class TransformerBrain:
                 )
 
             if self._scaler is not None:
-                data = self._scaler.transform(data).astype(np.float32)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    data = self._scaler.transform(data).astype(np.float32)
 
             tensor = torch.tensor(data).unsqueeze(0)  # shape (1, 32, 11)
 
@@ -147,15 +156,28 @@ class TransformerBrain:
                 raw_logit = self._model(tensor)
                 prob      = torch.sigmoid(raw_logit).item()
 
-            if prob >= 0.52:
+            # More decisive conversion (narrower HOLD zone)
+            # Old: BUY >= 0.52, SELL <= 0.48, HOLD in between
+            # New: BUY >= 0.505, SELL <= 0.495 — almost no neutral zone
+            if prob >= 0.505:
                 action     = "BUY"
-                confidence = prob
-            elif prob <= 0.48:
+                confidence = min(0.95, 0.5 + (prob - 0.5) * 1.8)  # stretch confidence
+            elif prob <= 0.495:
                 action     = "SELL"
-                confidence = 1.0 - prob
+                confidence = min(0.95, 0.5 + (0.5 - prob) * 1.8)
             else:
                 action     = "HOLD"
-                confidence = abs(prob - 0.50) * 2
+                confidence = abs(prob - 0.50) * 4  # still low
+
+            # Extra bias toward BUY when in ACCUMULATION and we are flat
+            if snapshot.regime == "ACCUMULATION" and not snapshot.has_position:
+                if action == "HOLD" and prob > 0.48:
+                    action = "BUY"
+                    confidence = max(confidence, 0.55)
+                elif action == "SELL" and prob > 0.46:
+                    # Soften pure SELL into HOLD when accumulating
+                    action = "HOLD"
+                    confidence = 0.50
 
             return AIDecision(
                 brain="transformer",

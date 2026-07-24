@@ -18,7 +18,28 @@ def run_committee(
 
     Winning action must exceed MIN_VOTE_SCORE (default 0.60) to execute.
     Below threshold → SKIP.
+
+    Special rules:
+      - When flat (no position), SELL votes are ignored / converted to SKIP
+      - In ACCUMULATION regime we bias toward BUY and use a lower threshold (0.45)
     """
+
+    # ── Pre-process decisions: when flat, ignore SELL votes ──────────────
+    processed = []
+    for d in decisions:
+        if not snapshot.has_position and d.action == "SELL":
+            # Convert SELL → SKIP when we have no position to sell
+            processed.append(AIDecision(
+                brain=d.brain,
+                action="SKIP",
+                confidence=d.confidence * 0.5,  # dampen the confidence
+                regime=d.regime,
+                reason=f"{d.reason} (SELL ignored while flat)",
+            ))
+        else:
+            processed.append(d)
+
+    decisions = processed
 
     # Accumulate weighted scores per action
     action_scores: dict[str, float] = defaultdict(float)
@@ -44,14 +65,19 @@ def run_committee(
         weighted_conf = weight * decision.confidence
         action_scores[decision.action] += weighted_conf
 
+    # ── Bias toward BUY in ACCUMULATION regime ───────────────────────
+    regime = _majority_regime(decisions)
+    if regime == "ACCUMULATION" and not snapshot.has_position:
+        # Give BUY a small boost so borderline cases can fire
+        action_scores["BUY"] = action_scores.get("BUY", 0.0) + 0.08
+
     # Find winning action
     winning_action = max(action_scores, key=action_scores.get)
     winning_score  = action_scores[winning_action]
 
-    # Regime-adaptive threshold
-    regime = _majority_regime(decisions)
+    # Regime-adaptive threshold (loosened)
     if regime in ["ACCUMULATION", "DUMP"]:
-        required_score = 0.52   # Lower threshold to catch bottoms early
+        required_score = 0.45   # Lowered from 0.52 to catch bottoms earlier
     elif regime == "DISTRIBUTION":
         required_score = 0.68   # Higher threshold to avoid buying top exhaustion
     else:
@@ -88,10 +114,20 @@ def run_committee(
             vote_breakdown=dict(action_scores),
         )
 
+    # When flat we only allow BUY (already converted SELLs above)
+    if not snapshot.has_position and winning_action == "SELL":
+        return CommitteeResult(
+            action="SKIP",
+            confidence=winning_score,
+            regime=regime,
+            votes=decisions,
+            vote_breakdown=dict(action_scores),
+        )
+
     return CommitteeResult(
         action=winning_action,
         confidence=round(winning_score, 4),
-        regime=_majority_regime(decisions),
+        regime=regime,
         votes=decisions,
         vote_breakdown=dict(action_scores),
     )
