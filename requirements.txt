@@ -9,3 +9,4 @@ psycopg2-binary
 aiohttp
 pytz
 websockets<=13.1
+pydantic-settings
