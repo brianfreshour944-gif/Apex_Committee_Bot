@@ -2,6 +2,8 @@
 # Loads model (grok_gqa_v9_best.pth) & feature scaler (feature_scaler.pkl) directly from Grok v8 architecture.
 
 import os
+import json
+import urllib.request
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,9 +12,26 @@ import pandas as pd
 import joblib
 import warnings
 
-from config import logger, MODEL_PATH, SCALER_PATH, SEQUENCE_LEN
+from config import logger, MODEL_PATH, SCALER_PATH, SEQUENCE_LEN, DISCORD_WEBHOOK_URL
 from models import MarketSnapshot, AIDecision
 from feature_engineering import add_features, FEATURE_COLS
+
+
+def _alert_transformer_load_failure(reason):
+    if not DISCORD_WEBHOOK_URL:
+        return
+    try:
+        payload = json.dumps({
+            "embeds": [{
+                "title": "Transformer brain failed to load",
+                "description": reason + " - bot continues with quant + momentum only.",
+                "color": 15158332,
+            }]
+        }).encode("utf-8")
+        req = urllib.request.Request(DISCORD_WEBHOOK_URL, data=payload, headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as alert_exc:
+        logger.warning(f"Failed to send transformer-load-failure alert: {alert_exc}")
 
 # Suppress the scikit-learn version mismatch warning (scaler was fit on 1.6.1)
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
@@ -100,6 +119,7 @@ class TransformerBrain:
     def _load(self):
         if not os.path.exists(MODEL_PATH):
             logger.warning(f"⚠️ Transformer model not found at {MODEL_PATH} — brain will SKIP")
+            _alert_transformer_load_failure(f"Model file not found at {MODEL_PATH}")
             return
         try:
             device = torch.device("cpu")
@@ -119,6 +139,7 @@ class TransformerBrain:
             logger.info(f"🤖 Transformer brain loaded successfully from {MODEL_PATH}")
         except Exception as e:
             logger.error(f"Transformer brain load failed: {e}")
+            _alert_transformer_load_failure(f"Exception during load: {e}")
 
     def decide(self, snapshot: MarketSnapshot) -> AIDecision:
         if not self._loaded or self._model is None:
