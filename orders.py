@@ -1,5 +1,5 @@
-# orders.py — Order placement with Decimal price sanitization.
 
+import asyncio
 import math
 from decimal import Decimal, ROUND_DOWN
 
@@ -40,8 +40,9 @@ async def place_order(
                 time_in_force=TimeInForce.GTC,
             )
 
-        order = trading_client.submit_order(order_data=order_data)
-        record_trade(BOT_NAME, symbol, side.value, qty, price, order_id=order.id)
+        # Offload blocking Alpaca HTTP + DB calls to threads
+        order = await asyncio.to_thread(trading_client.submit_order, order_data=order_data)
+        await asyncio.to_thread(record_trade, BOT_NAME, symbol, side.value, qty, price, order_id=order.id)
         logger.info(f"✅ {side.value.upper()} {symbol} qty={qty:.6f} @ ~${price:.4f}")
         return True
 

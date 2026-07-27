@@ -1,5 +1,6 @@
 # data_feed.py — OHLCV fetch + all indicator computation for the committee.
 
+import asyncio
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta, timezone
@@ -23,7 +24,13 @@ async def get_ohlcv(symbol: str, limit: int = 80) -> pd.DataFrame | None:
             limit=limit,
             start=start_time,
         )
-        bars = data_client.get_crypto_bars(req).data.get(symbol, [])
+        # FIXED: was a direct blocking call with no await -- meant
+        # main.py's asyncio.gather(*[get_ohlcv(s) for s in SYMBOLS]) provided
+        # zero real concurrency (each "coroutine" ran to completion,
+        # blocking, before the next started). Wrapping in asyncio.to_thread
+        # is what actually makes the gather() parallelize.
+        bars_response = await asyncio.to_thread(data_client.get_crypto_bars, req)
+        bars = bars_response.data.get(symbol, [])
 
         bar_duration = timedelta(minutes=15)
         now_utc      = datetime.now(timezone.utc)
@@ -172,15 +179,27 @@ def get_all_positions() -> dict:
         return {}
 
 
-def get_orderbook_ratio(symbol: str) -> float | None:
+async def get_orderbook_ratio(symbol: str) -> float | None:
     """
     Fetches real-time L2 orderbook and computes total Bid Size / total Ask Size.
     Safe fallbacks handle '.s' vs '.size' vs dictionary keys across API versions.
+
+    FIXED: this was previously a plain `def`, but main.py calls it with
+    `await get_orderbook_ratio(symbol)` -- awaiting a non-async function
+    raises `TypeError: object float can't be used in 'await' expression`
+    on every BUY decision (verified directly). Caught by main.py's
+    per-symbol try/except, so it wouldn't crash the bot outright, but it
+    silently skipped every trade that reached the whale-gate check -- a
+    second, independent way trades could never execute, alongside the
+    missing-import bugs in orders.py/portfolio.py/database.py.
+    Also offloaded the blocking Alpaca SDK call to a thread, consistent
+    with the rest of the async fixes -- otherwise this would still block
+    the event loop every time it ran.
     """
     try:
         from alpaca.data.requests import CryptoOrderbookRequest
         req = CryptoOrderbookRequest(symbol_or_symbols=symbol)
-        books = data_client.get_crypto_orderbook(req)
+        books = await asyncio.to_thread(data_client.get_crypto_orderbook, req)
         book = books.get(symbol) if isinstance(books, dict) else getattr(books, "data", {}).get(symbol)
         
         if not book:

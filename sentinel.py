@@ -15,20 +15,34 @@ class Sentinel:
     Danger conditions:
       1. ATR% spike     — extreme volatility (flash crashes, pumps)
       2. Volume anomaly — abnormal volume (manipulation risk)
-      3. Consecutive losses — strategy may have broken; pause to protect equity
+      3. Consecutive losses — a specific symbol's strategy may have broken;
+         pause THAT symbol to protect equity (tracked per-symbol, see below)
       4. Insufficient buying power — don't over-leverage
       5. ATR > 3% but not vetoing — caps position size to 50%
+
+    FIXED: consecutive-loss tracking was previously a single counter shared
+    across ALL symbols (self._consecutive_losses = 0). With multiple
+    concurrent positions across unrelated symbols, that meant e.g. one loss
+    each on 3 different, unrelated symbols within a normal-variance stretch
+    would trigger a full portfolio-wide trading pause -- even though no
+    single symbol/setup showed genuine evidence of being broken. Conversely,
+    a real losing streak concentrated on ONE symbol could be masked by an
+    interleaved win on a different symbol resetting the shared counter.
+    Now tracked per-symbol (dict), so the pause targets the specific symbol
+    that's actually underperforming, not the whole portfolio.
     """
 
     def __init__(self):
-        self._consecutive_losses = 0
+        self._consecutive_losses: dict[str, int] = {}
 
-    def register_loss(self):
-        self._consecutive_losses += 1
-        logger.warning(f"🛑 Sentinel: consecutive losses = {self._consecutive_losses}")
+    def register_loss(self, symbol: str):
+        self._consecutive_losses[symbol] = self._consecutive_losses.get(symbol, 0) + 1
+        logger.warning(
+            f"🛑 Sentinel: {symbol} consecutive losses = {self._consecutive_losses[symbol]}"
+        )
 
-    def register_win(self):
-        self._consecutive_losses = 0
+    def register_win(self, symbol: str):
+        self._consecutive_losses[symbol] = 0
 
     def check(
         self,
@@ -36,6 +50,8 @@ class Sentinel:
         committee: CommitteeResult,
     ) -> SentinelReport:
 
+        symbol     = snapshot.symbol
+        losses     = self._consecutive_losses.get(symbol, 0)
         atr_pct    = snapshot.indicators["atr_pct"]
         vol_ratio  = snapshot.indicators["vol_ratio"]
         equity     = snapshot.equity
@@ -55,10 +71,10 @@ class Sentinel:
                 reason=f"📊 Volume anomaly {vol_ratio:.1f}x avg — possible manipulation",
             )
 
-        if self._consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
+        if losses >= MAX_CONSECUTIVE_LOSSES:
             return SentinelReport(
                 veto=True,
-                reason=f"🔴 {self._consecutive_losses} consecutive losses — strategy pause",
+                reason=f"🔴 {symbol}: {losses} consecutive losses — pausing this symbol",
             )
 
         if committee.action == "BUY" and bp < 10.0:
@@ -76,11 +92,11 @@ class Sentinel:
                 cap_pct=0.50,
             )
 
-        if self._consecutive_losses >= 2:
-            logger.warning(f"⚠️ Sentinel: {self._consecutive_losses} losses — reducing size to 60%")
+        if losses >= 2:
+            logger.warning(f"⚠️ Sentinel: {symbol} {losses} losses — reducing size to 60%")
             return SentinelReport(
                 veto=False,
-                reason=f"{self._consecutive_losses} losses — size reduced",
+                reason=f"{symbol}: {losses} losses — size reduced",
                 cap_pct=0.60,
             )
 
