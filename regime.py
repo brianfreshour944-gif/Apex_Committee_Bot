@@ -48,7 +48,11 @@ def classify_regime(df: pd.DataFrame, indicators: dict) -> str:
         if 30 <= rsi <= 50:                 accum_score += 2
         if vol_ratio >= 1.5 and mom5 > 0:   accum_score += 2  # vol spike + green
         if price < ema_slow:                accum_score += 1  # still below slow ema
-        if macd_hist > macd_hist - 0.001:   accum_score += 1  # macd improving (rough)
+        # NOTE: removed a tautological check here (macd_hist > macd_hist - 0.001,
+        # always true) that was awarding +1 to accum_score unconditionally on
+        # every evaluation, regardless of actual MACD trend. No prior macd_hist
+        # value is currently tracked to do a real "is it improving" comparison;
+        # add that state if this signal is wanted back.
         if price > bb_lower:                accum_score += 1  # bounced off lower band
 
         # UPTREND signals

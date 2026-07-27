@@ -1,0 +1,19 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyc
+
+# Logs
+logs/
+*.log
+
+# Environment / secrets
+.env
+.env.local
+
+# State files (runtime-generated)
+committee_bot_state.json
+committee_heartbeat.txt
+
+# OS
+.DS_Store
