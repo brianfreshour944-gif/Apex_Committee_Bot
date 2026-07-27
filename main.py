@@ -137,7 +137,9 @@ async def run():
                 f"Drawdown: {drawdown*100:.2f}% | Positions: {len(entry_times)}/{MAX_OPEN_POSITIONS}"
             )
 
-            if drawdown <= MAX_DRAWDOWN_STOP:
+            # Liquidate only when drawdown exceeds permitted loss threshold (negative value)
+            # MAX_DRAWDOWN_STOP is a negative number (e.g., -0.10 = 10% loss limit)
+            if drawdown <= MAX_DRAWDOWN_STOP and drawdown < 0:
                 logger.error(f"🚨 MAX DRAWDOWN {drawdown*100:.1f}% — liquidating all")
                 try:
                     await send_discord_alert(
@@ -308,7 +310,7 @@ async def run():
                     trade_value = calculate_trade_size(
                         equity, committee.confidence, sentinel_report.cap_pct
                     )
-                    if trade_value <= 0:
+                    if trade_value <= 0 or buying_power < trade_value:
                         continue
 
                     if buying_power < trade_value:
