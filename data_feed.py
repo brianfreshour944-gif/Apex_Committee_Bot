@@ -51,6 +51,19 @@ async def get_ohlcv(symbol: str, limit: int = 80) -> pd.DataFrame | None:
         df.set_index("timestamp", inplace=True)
         df = df[df["close"] > 0]
 
+        # FIXED: the earlier `len(bars) < SEQUENCE_LEN` check runs BEFORE
+        # this close>0 filter, which can drop further rows (bad/zero-price
+        # bars do happen on real crypto feeds). Without a re-check here, a
+        # df shorter than SEQUENCE_LEN -- and shorter than the 14-period
+        # window _atr_pct/_rsi need -- could reach compute_indicators()
+        # undetected. Verified directly: a too-short df makes _atr_pct
+        # silently return NaN, which then makes sentinel.py's volatility
+        # veto checks (`atr_pct > SENTINEL_MAX_ATR_PCT`) silently evaluate
+        # False -- the safety check no-ops exactly when data is worst,
+        # instead of blocking defensively.
+        if len(df) < SEQUENCE_LEN:
+            return None
+
         if df.index.tz is not None:
             df.index = df.index.tz_localize(None)
 
