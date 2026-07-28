@@ -152,27 +152,29 @@ def compute_indicators(df: pd.DataFrame) -> dict:
 
 # ── Account state ─────────────────────────────────────────────────────────────
 
-def get_account_state() -> tuple[float, float]:
-    """Returns (equity, buying_power)."""
+async def get_account_state() -> tuple[float, float]:
+    """Returns (equity, buying_power). Offloaded to thread to avoid blocking the event loop."""
     from config import trading_client
     try:
-        acct = trading_client.get_account()
+        acct = await asyncio.to_thread(trading_client.get_account)
         return float(acct.equity), float(acct.buying_power)
     except Exception as e:
         logger.error(f"Account fetch failed: {e}")
         return 0.0, 0.0
 
 
-def get_all_positions() -> dict:
+async def get_all_positions() -> dict:
+    """Fetch all positions. Offloaded to thread to avoid blocking the event loop."""
     from config import trading_client
     try:
+        positions = await asyncio.to_thread(trading_client.get_all_positions)
         return {
             p.symbol: {
                 "qty":       float(p.qty),
                 "avg_entry": float(p.avg_entry_price),
                 "market_value": float(p.market_value),
             }
-            for p in trading_client.get_all_positions()
+            for p in positions
         }
     except Exception as e:
         logger.error(f"Positions fetch failed: {e}")

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # main.py — Apex Committee Bot: 4-brain ensemble trading system.
 #
 # Architecture:
@@ -53,8 +52,8 @@ cooldowns:     dict  = {}    # {alpaca_sym: float}  — timestamp
 start_equity:  float | None = None
 
 
-def save_state():
-    """Atomically save persistent state to disk."""
+async def save_state():
+    """Atomically save persistent state to disk (offloaded to thread)."""
     try:
         data = {
             "entry_times":  {k: v.isoformat() for k, v in entry_times.items()},
@@ -63,9 +62,11 @@ def save_state():
             "cooldowns":    cooldowns,
         }
         tmp_path = f"{STATE_FILE_PATH}.tmp"
-        with open(tmp_path, "w") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_path, STATE_FILE_PATH)
+        def _write():
+            with open(tmp_path, "w") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp_path, STATE_FILE_PATH)
+        await asyncio.to_thread(_write)
     except Exception as e:
         logger.warning(f"State save failed: {e}")
 
@@ -118,15 +119,15 @@ async def run():
     while True:
         cycle_start = time.time()
         try:
-            write_heartbeat()
+            await write_heartbeat()
 
             # ── Account state ──────────────────────────────────────────────
-            equity, buying_power = get_account_state()
+            equity, buying_power = await get_account_state()
             if start_equity is None:
                 start_equity = equity
 
             try:
-                report_equity(BOT_NAME, equity)
+                await asyncio.to_thread(report_equity, BOT_NAME, equity)
             except Exception:
                 pass  # non-critical
 
@@ -149,22 +150,25 @@ async def run():
                     )
                 except Exception:
                     pass
-                close_all_positions()
+                await close_all_positions()
                 break
 
             # ── Fetch all positions ─────────────────────────────────────────
-            current_positions = get_all_positions()
+            current_positions = await get_all_positions()
             now               = time.time()
 
+            # ── Parallel OHLCV fetch ─────────────────────────────────────────
+            # Fetch all symbols' OHLCV data concurrently to avoid sequential
+            # network latency (3 symbols × ~200ms = ~600ms → ~200ms with gather)
+            ohlcv_data = await asyncio.gather(*[get_ohlcv(s) for s in SYMBOLS])
+
             # ── Per-symbol loop ────────────────────────────────────────────
-            for symbol in SYMBOLS:
+            for symbol, df in zip(SYMBOLS, ohlcv_data):
                 try:
                     alpaca_sym = normalize_symbol(symbol)
                     pos_data   = current_positions.get(alpaca_sym)
                     has_pos    = pos_data is not None and pos_data["qty"] > 0
 
-                    # ── Fetch data ─────────────────────────────────────────────
-                    df = await get_ohlcv(symbol)
                     if df is None:
                         logger.warning(f"⚠️ No data for {symbol} — skipping")
                         continue
@@ -184,7 +188,7 @@ async def run():
                     # ── Attach df to snapshot (transformer brain needs it) ─────────
                     snapshot = MarketSnapshot(
                         symbol=symbol,
-                        candles=df.reset_index().to_dict("records"),
+                        candles=[],  # removed redundant df→dict conversion (not used by any brain)
                         indicators=indicators,
                         regime=regime,
                         atr_pct=indicators["atr_pct"],
@@ -232,16 +236,16 @@ async def run():
 
                         if exit_reason:
                             logger.info(f"🔴 EXIT {symbol}: {exit_reason}")
-                            success = close_position(symbol)
+                            success = await close_position(symbol)
                             if success:
                                 if pnl_pct < 0:
-                                    sentinel.register_loss()
+                                    sentinel.register_loss(symbol)
                                 else:
-                                    sentinel.register_win()
+                                    sentinel.register_win(symbol)
                                 entry_times.pop(alpaca_sym, None)
                                 entry_prices.pop(alpaca_sym, None)
                                 peak_prices.pop(alpaca_sym, None)
-                                save_state()
+                                await save_state()
                                 try:
                                     await send_discord_alert(
                                         title=f"{'🔴' if pnl_pct<0 else '🟢'} SOLD {symbol}",
@@ -300,7 +304,7 @@ async def run():
                         continue
 
                     # ── L2 Orderbook Whale Gate ──────────────────────────────────
-                    ob_ratio = get_orderbook_ratio(symbol)
+                    ob_ratio = await get_orderbook_ratio(symbol)
                     if ob_ratio is not None and ob_ratio < MIN_BID_ASK_RATIO:
                         logger.warning(
                             f"🐋 WHALE GATE VETO {symbol}: Bid/Ask depth ratio {ob_ratio:.2f} < min {MIN_BID_ASK_RATIO}"
@@ -330,7 +334,7 @@ async def run():
                         peak_prices[alpaca_sym]  = price
                         cooldowns[alpaca_sym]    = now + COOLDOWN_SECONDS_BUY
                         buying_power            -= trade_value
-                        save_state()
+                        await save_state()
 
                         # Format vote breakdown for Discord
                         vote_lines = "\n".join(
