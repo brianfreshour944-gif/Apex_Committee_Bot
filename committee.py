@@ -49,7 +49,7 @@ def run_committee(
     total_active_weight = 0.0
     for decision in decisions:
         w = BRAIN_WEIGHTS.get(decision.brain, 0.0)
-        if decision.reason != "Model not loaded":
+        if not decision.failed:
             active_weights[decision.brain] = w
             total_active_weight += w
         else:

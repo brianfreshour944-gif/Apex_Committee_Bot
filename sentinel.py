@@ -1,6 +1,8 @@
 # sentinel.py — The 4th Brain. Does NOT vote. Only vetoes or caps positions.
 # If the sentinel says DANGER, the committee is overridden and no trade fires.
 
+import math
+
 from config import (
     logger,
     SENTINEL_MAX_ATR_PCT, SENTINEL_MAX_VOL_MULT,
@@ -59,13 +61,13 @@ class Sentinel:
 
         # ── Hard vetoes ────────────────────────────────────────────────────────
 
-        if atr_pct > SENTINEL_MAX_ATR_PCT:
+        if not math.isfinite(atr_pct) or atr_pct > SENTINEL_MAX_ATR_PCT:
             return SentinelReport(
                 veto=True,
                 reason=f"🌊 ATR spike {atr_pct:.2f}% > limit {SENTINEL_MAX_ATR_PCT}% — too volatile",
             )
 
-        if vol_ratio > SENTINEL_MAX_VOL_MULT:
+        if not math.isfinite(vol_ratio) or vol_ratio > SENTINEL_MAX_VOL_MULT:
             return SentinelReport(
                 veto=True,
                 reason=f"📊 Volume anomaly {vol_ratio:.1f}x avg — possible manipulation",

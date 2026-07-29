@@ -145,7 +145,8 @@ class TransformerBrain:
         if not self._loaded or self._model is None:
             return AIDecision(
                 brain="transformer", action="SKIP", confidence=0.0,
-                regime=snapshot.regime, reason="Model not loaded"
+                regime=snapshot.regime, reason="Model not loaded",
+                failed=True
             )
 
         try:
@@ -153,7 +154,8 @@ class TransformerBrain:
             if df is None or len(df) < SEQUENCE_LEN:
                 return AIDecision(
                     brain="transformer", action="SKIP", confidence=0.0,
-                    regime=snapshot.regime, reason="Insufficient bars for features"
+                    regime=snapshot.regime, reason="Insufficient bars for features",
+                    failed=True
                 )
 
             # Compute the exact 11 institutional features from Grok v8
@@ -163,7 +165,8 @@ class TransformerBrain:
             if len(data) < SEQUENCE_LEN:
                 return AIDecision(
                     brain="transformer", action="SKIP", confidence=0.0,
-                    regime=snapshot.regime, reason="Feature tail length short"
+                    regime=snapshot.regime, reason="Feature tail length short",
+                    failed=True
                 )
 
             if self._scaler is not None:
@@ -212,7 +215,8 @@ class TransformerBrain:
             logger.error(f"Transformer inference failed: {e}")
             return AIDecision(
                 brain="transformer", action="SKIP", confidence=0.0,
-                regime=snapshot.regime, reason=str(e)
+                regime=snapshot.regime, reason=str(e),
+                failed=True
             )
 
 

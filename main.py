@@ -93,7 +93,7 @@ async def run():
     global start_equity
 
     try:
-        init_db()
+        await asyncio.to_thread(init_db)
     except Exception as e:
         logger.warning(f"Database init failed (continuing without DB): {e}")
 

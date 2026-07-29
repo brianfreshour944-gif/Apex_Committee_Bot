@@ -26,6 +26,7 @@ class AIDecision:
     confidence: float         # 0.0 – 1.0
     regime:     str           # DUMP | ACCUMULATION | UPTREND | DISTRIBUTION
     reason:     str
+    failed:     bool = False
 
 
 @dataclass

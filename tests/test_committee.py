@@ -20,20 +20,21 @@ def test_committee_scoring():
     decisions = [
         AIDecision(brain="transformer", action="BUY", confidence=0.8, regime="UPTREND", reason="Mock"),
         AIDecision(brain="quant", action="BUY", confidence=0.6, regime="UPTREND", reason="Mock"),
-        AIDecision(brain="momentum", action="HOLD", confidence=0.0, regime="UPTREND", reason="Mock")
+        AIDecision(brain="momentum", action="HOLD", confidence=0.0, regime="UPTREND", reason="Mock", failed=True)
     ]
     
     # Run committee
     result = run_committee(snapshot, decisions)
     
     # Weights from config: Transformer 0.5, Quant 0.3, Momentum 0.2
-    # BUY score = (0.8 * 0.5) + (0.6 * 0.3) = 0.40 + 0.18 = 0.58
-    # HOLD score = (0 * 0.2) = 0
-    # Winning score = 0.58
-    
-    # Since config.MIN_VOTE_SCORE is 0.60, this should actually fail to reach BUY and default to HOLD!
+    # Momentum has failed=True, so it is excluded from weight normalization.
+    # total_active_weight = 0.5 + 0.3 = 0.8
+    # transformer: 0.5/0.8 = 0.625, quant: 0.3/0.8 = 0.375
+    # BUY score = (0.8 * 0.625) + (0.6 * 0.375) = 0.50 + 0.225 = 0.725
+    # HOLD score = 0.0
+    # Since 0.725 >= 0.60 (MIN_VOTE_SCORE), this returns BUY
     import config
-    expected_buy = 0.58
+    expected_buy = 0.725
     if expected_buy >= config.MIN_VOTE_SCORE:
         assert result.action == "BUY"
     else:
