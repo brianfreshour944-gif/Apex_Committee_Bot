@@ -2,7 +2,6 @@
 # RSI + MACD + Bollinger Bands + EMA crossover. Regime-aware thresholds.
 
 from models import MarketSnapshot, AIDecision
-from config import logger
 
 
 class QuantBrain:

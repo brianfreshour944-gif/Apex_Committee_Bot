@@ -28,7 +28,7 @@ from config import (
     logger, BOT_NAME, SYMBOLS,
     MAX_OPEN_POSITIONS, MAX_DRAWDOWN_STOP,
     STOP_LOSS_PCT, TAKE_PROFIT_PCT, TRAILING_STOP_PCT, MAX_HOLD_HOURS,
-    COOLDOWN_SECONDS_BUY, SLEEP_PER_LOOP, HEARTBEAT_PATH,
+    COOLDOWN_SECONDS_BUY, SLEEP_PER_LOOP,
     STATE_FILE_PATH, MIN_BID_ASK_RATIO,
 )
 from data_feed import get_ohlcv, compute_indicators, get_account_state, get_all_positions, get_orderbook_ratio
@@ -282,11 +282,16 @@ async def run():
                         continue
 
                     # ── Run the committee ──────────────────────────────────────
-                    decisions = [
-                        transformer_brain.decide(snapshot),
-                        quant_brain.decide(snapshot),
-                        momentum_brain.decide(snapshot),
-                    ]
+                    # Offloaded to threads: transformer_brain.decide() runs a
+                    # PyTorch CPU forward pass (~500-900ms measured), which
+                    # would otherwise block the event loop for the full
+                    # duration -- starving heartbeat writes, Discord alerts,
+                    # and processing of other symbols for the whole cycle.
+                    decisions = list(await asyncio.gather(
+                        asyncio.to_thread(transformer_brain.decide, snapshot),
+                        asyncio.to_thread(quant_brain.decide, snapshot),
+                        asyncio.to_thread(momentum_brain.decide, snapshot),
+                    ))
                     committee = run_committee(snapshot, decisions)
 
                     # ── Sentinel check ────────────────────────────────────────
@@ -315,7 +320,7 @@ async def run():
                     trade_value = calculate_trade_size(
                         equity, committee.confidence, sentinel_report.cap_pct
                     )
-                    if trade_value <= 0 or buying_power < trade_value:
+                    if trade_value <= 0:
                         continue
 
                     if buying_power < trade_value:

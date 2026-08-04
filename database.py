@@ -1,7 +1,6 @@
 
 import os
 import psycopg2
-from psycopg2 import pool
 from config import logger
 
 # ── Connection pool (lazily initialised) ────────────────────────────────────────

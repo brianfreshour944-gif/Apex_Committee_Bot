@@ -1,4 +1,3 @@
-import pytest
 from committee import run_committee
 from models import MarketSnapshot, AIDecision
 

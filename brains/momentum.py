@@ -2,7 +2,6 @@
 # Specializes in detecting DUMP→ACCUMULATION (bottom) and UPTREND→DISTRIBUTION (top) transitions.
 
 from models import MarketSnapshot, AIDecision
-from config import logger
 
 
 class MomentumBrain:

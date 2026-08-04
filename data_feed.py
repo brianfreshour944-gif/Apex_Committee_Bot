@@ -9,7 +9,6 @@ from alpaca.data.requests import CryptoBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 from config import logger, data_client, SEQUENCE_LEN
-from models import MarketSnapshot
 
 
 # ── OHLCV ─────────────────────────────────────────────────────────────────────
@@ -88,21 +87,31 @@ def _rsi(series: pd.Series, period: int = 14) -> float:
 
 
 def _macd(series: pd.Series) -> tuple[float, float]:
-    """Returns (macd_line, signal_line)."""
+    """Returns (macd_line, signal_line). NaN-safe: falls back to (0.0, 0.0)
+    if there isn't enough history yet (e.g. a df shorter than expected)."""
     ema12  = series.ewm(span=12).mean()
     ema26  = series.ewm(span=26).mean()
     macd   = ema12 - ema26
     signal = macd.ewm(span=9).mean()
-    return float(macd.iloc[-1]), float(signal.iloc[-1])
+    macd_val, signal_val = macd.iloc[-1], signal.iloc[-1]
+    if np.isnan(macd_val) or np.isnan(signal_val):
+        return 0.0, 0.0
+    return float(macd_val), float(signal_val)
 
 
 def _bollinger(series: pd.Series, period: int = 20) -> tuple[float, float, float]:
-    """Returns (upper, mid, lower) bands."""
+    """Returns (upper, mid, lower) bands. NaN-safe: falls back to
+    (price, price, price) -- a neutral/no-band-signal state -- if there
+    isn't enough history yet (rolling(period) needs `period` prior rows)."""
     mid   = series.rolling(period).mean()
     std   = series.rolling(period).std()
     upper = mid + 2 * std
     lower = mid - 2 * std
-    return float(upper.iloc[-1]), float(mid.iloc[-1]), float(lower.iloc[-1])
+    upper_val, mid_val, lower_val = upper.iloc[-1], mid.iloc[-1], lower.iloc[-1]
+    if np.isnan(upper_val) or np.isnan(mid_val) or np.isnan(lower_val):
+        price = float(series.iloc[-1])
+        return price, price, price
+    return float(upper_val), float(mid_val), float(lower_val)
 
 
 def _atr_pct(df: pd.DataFrame, period: int = 14) -> float:
