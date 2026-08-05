@@ -125,10 +125,7 @@ API_KEY    = settings.apca_api_key_id
 API_SECRET = settings.apca_api_secret_key
 PAPER      = settings.apca_api_paper
 
-logger.info(
-    f"Credential check - key present: {bool(API_KEY)} | "
-    f"secret present: {bool(API_SECRET)} | paper={PAPER}"
-)
+logger.info(f"Alpaca client initialized (paper={PAPER})")
 
 trading_client = TradingClient(api_key=API_KEY, secret_key=API_SECRET, paper=PAPER)
 data_client    = CryptoHistoricalDataClient()
