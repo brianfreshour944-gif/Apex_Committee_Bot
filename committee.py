@@ -17,7 +17,7 @@ def run_committee(
       momentum    = 20%
 
     Winning action must exceed MIN_VOTE_SCORE (default 0.60) to execute.
-    Below threshold → SKIP.
+    Below threshold -> SKIP.
 
     Special rules:
       - When flat (no position), SELL votes are ignored / converted to SKIP
@@ -28,7 +28,7 @@ def run_committee(
     processed = []
     for d in decisions:
         if not snapshot.has_position and d.action == "SELL":
-            # Convert SELL → SKIP when we have no position to sell
+            # Convert SELL -> SKIP when we have no position to sell
             processed.append(AIDecision(
                 brain=d.brain,
                 action="SKIP",
@@ -83,16 +83,16 @@ def run_committee(
     else:
         required_score = MIN_VOTE_SCORE
 
-    # Log the full vote breakdown
-    logger.info("🗳️  Committee vote:")
+# Log the full vote breakdown at DEBUG (not INFO — INFO blocks the event loop)
+    logger.debug("Committee vote:")
     for d in decisions:
         weight = active_weights.get(d.brain, 0)
-        logger.info(
+        logger.debug(
             f"   [{d.brain:12s}] {d.action:4s} conf={d.confidence:.3f} "
-            f"(weight={weight:.0%}) → weighted={weight*d.confidence:.3f} | {d.reason}"
+            f"(weight={weight:.0%}) -> weighted={weight*d.confidence:.3f} | {d.reason}"
         )
-    logger.info(f"   Action scores: { {k: round(v,3) for k,v in action_scores.items()} }")
-    logger.info(f"   Winner: {winning_action} score={winning_score:.3f} (regime={regime} threshold >{required_score:.2f})")
+    logger.debug(f"   Action scores: { {k: round(v,3) for k,v in action_scores.items()} }")
+    logger.debug(f"   Winner: {winning_action} score={winning_score:.3f} (regime={regime} threshold >{required_score:.2f})")
 
     # Threshold gate
     if winning_score < required_score:

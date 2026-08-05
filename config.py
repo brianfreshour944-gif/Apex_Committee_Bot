@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from alpaca.trading.client import TradingClient
 from alpaca.data.historical import CryptoHistoricalDataClient
 
-# ── Configuration Schema ───────────────────────────────────────────────────────
+# -- Configuration Schema -------------------------------------------------------
 class Settings(BaseSettings):
     bot_name: str = "Apex_Committee_v1"
     
@@ -51,7 +51,7 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# ── Logging ────────────────────────────────────────────────────────────────────
+# -- Logging --------------------------------------------------------------------
 logger = logging.getLogger("ApexBot")
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s | %(levelname)s | %(message)s')
@@ -72,10 +72,10 @@ BOT_VERSION = "2026-07-21-r2"
 BOT_NAME = settings.bot_name
 logger.info(f"Bot version: {BOT_VERSION} | Name: {BOT_NAME}")
 
-# ── Universe ───────────────────────────────────────────────────────────────────
+# -- Universe -------------------------------------------------------------------
 SYMBOLS = ["BTC/USD", "ETH/USD", "SOL/USD"]
 
-# ── Committee brain weights ────────────────────────────────────────────────────
+# -- Committee brain weights ----------------------------------------------------
 BRAIN_WEIGHTS = {
     "transformer": settings.weight_transformer,
     "quant":       settings.weight_quant,
@@ -120,13 +120,13 @@ SEQUENCE_LEN = 32
 HEARTBEAT_PATH      = settings.heartbeat_path
 DISCORD_WEBHOOK_URL = settings.discord_webhook_url
 
-# ── Alpaca clients ─────────────────────────────────────────────────────────────
+# -- Alpaca clients -------------------------------------------------------------
 API_KEY    = settings.apca_api_key_id
 API_SECRET = settings.apca_api_secret_key
 PAPER      = settings.apca_api_paper
 
 logger.info(
-    f"Credential check — key present: {bool(API_KEY)} | "
+    f"Credential check - key present: {bool(API_KEY)} | "
     f"secret present: {bool(API_SECRET)} | paper={PAPER}"
 )
 

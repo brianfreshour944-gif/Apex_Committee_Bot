@@ -1,0 +1,14 @@
+{
+  "entry_times": {
+    "BTCUSD": "2026-08-05T04:16:52.960289+00:00"
+  },
+  "entry_prices": {
+    "BTCUSD": 60000.0
+  },
+  "peak_prices": {
+    "BTCUSD": 61000.0
+  },
+  "cooldowns": {
+    "BTCUSD": 1785904312.960304
+  }
+}

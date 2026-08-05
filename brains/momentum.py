@@ -1,5 +1,5 @@
 # brains/momentum.py — Brain 3 (20% weight): Volume + Momentum + Regime Transition Brain.
-# Specializes in detecting DUMP→ACCUMULATION (bottom) and UPTREND→DISTRIBUTION (top) transitions.
+# Specializes in detecting DUMP->ACCUMULATION (bottom) and UPTREND->DISTRIBUTION (top) transitions.
 
 from models import MarketSnapshot, AIDecision
 
@@ -7,13 +7,13 @@ from models import MarketSnapshot, AIDecision
 class MomentumBrain:
     """
     Focused on catching regime transitions:
-    - DUMP → ACCUMULATION = strongest BUY signal
-    - UPTREND → DISTRIBUTION = strongest SELL signal
+    - DUMP -> ACCUMULATION = strongest BUY signal
+    - UPTREND -> DISTRIBUTION = strongest SELL signal
     Uses volume, momentum, and candle structure.
     """
 
     def __init__(self):
-        self._prev_regime: dict = {}   # symbol → last known regime
+        self._prev_regime: dict = {}   # symbol -> last known regime
 
     def decide(self, snapshot: MarketSnapshot) -> AIDecision:
         ind    = snapshot.indicators
@@ -32,24 +32,24 @@ class MomentumBrain:
 
         # ── Transition detection ────────────────────────────────────────────────
 
-        # DUMP → ACCUMULATION: catching the bottom (highest conviction BUY)
+        # DUMP -> ACCUMULATION: catching the bottom (highest conviction BUY)
         if prev_regime == "DUMP" and regime == "ACCUMULATION":
             confidence = min(0.95, 0.70 + vol_ratio * 0.05 + (35 - rsi) * 0.005)
             return AIDecision(
                 brain="momentum", action="BUY",
                 confidence=round(confidence, 4),
                 regime=regime,
-                reason=f"DUMP→ACCUM transition | vol={vol_ratio:.1f}x | RSI={rsi:.1f}",
+                reason=f"DUMP->ACCUM transition | vol={vol_ratio:.1f}x | RSI={rsi:.1f}",
             )
 
-        # UPTREND → DISTRIBUTION: top signal (high conviction SELL)
+        # UPTREND -> DISTRIBUTION: top signal (high conviction SELL)
         if prev_regime == "UPTREND" and regime == "DISTRIBUTION":
             confidence = min(0.92, 0.70 + (rsi - 65) * 0.01)
             return AIDecision(
                 brain="momentum", action="SELL",
                 confidence=round(confidence, 4),
                 regime=regime,
-                reason=f"UPTREND→DIST transition | RSI={rsi:.1f} | mom5={mom5:.1f}%",
+                reason=f"UPTREND->DIST transition | RSI={rsi:.1f} | mom5={mom5:.1f}%",
             )
 
         # ── Regime-based actions ────────────────────────────────────────────────

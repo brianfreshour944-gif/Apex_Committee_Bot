@@ -70,13 +70,13 @@ class Sentinel:
         if not math.isfinite(vol_ratio) or vol_ratio > SENTINEL_MAX_VOL_MULT:
             return SentinelReport(
                 veto=True,
-                reason=f"📊 Volume anomaly {vol_ratio:.1f}x avg — possible manipulation",
+                reason=f"[CHART] Volume anomaly {vol_ratio:.1f}x avg — possible manipulation",
             )
 
         if losses >= MAX_CONSECUTIVE_LOSSES:
             return SentinelReport(
                 veto=True,
-                reason=f"🔴 {symbol}: {losses} consecutive losses — pausing this symbol",
+                reason=f"[BULL] {symbol}: {losses} consecutive losses — pausing this symbol",
             )
 
         if committee.action == "BUY" and bp < 10.0:
@@ -87,7 +87,7 @@ class Sentinel:
 
         # ── Soft warnings: allow trade but cap size ─────────────────────────────
         if atr_pct > 3.0:
-            logger.warning(f"⚠️ Sentinel: elevated ATR {atr_pct:.2f}% — capping position at 50%")
+            logger.warning(f"[!]️ Sentinel: elevated ATR {atr_pct:.2f}% — capping position at 50%")
             return SentinelReport(
                 veto=False,
                 reason=f"Elevated volatility ATR={atr_pct:.2f}% — position capped",
@@ -95,14 +95,14 @@ class Sentinel:
             )
 
         if losses >= 2:
-            logger.warning(f"⚠️ Sentinel: {symbol} {losses} losses — reducing size to 60%")
+            logger.warning(f"[!]️ Sentinel: {symbol} {losses} losses — reducing size to 60%")
             return SentinelReport(
                 veto=False,
                 reason=f"{symbol}: {losses} losses — size reduced",
                 cap_pct=0.60,
             )
 
-        return SentinelReport(veto=False, reason="✅ All clear")
+        return SentinelReport(veto=False, reason="[OK] All clear")
 
 
 sentinel = Sentinel()

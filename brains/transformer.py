@@ -117,7 +117,7 @@ class TransformerBrain:
 
     def _load(self):
         if not os.path.exists(MODEL_PATH):
-            logger.warning(f"⚠️ Transformer model not found at {MODEL_PATH} — brain will SKIP")
+            logger.warning(f"[!]️ Transformer model not found at {MODEL_PATH} — brain will SKIP")
             _alert_transformer_load_failure(f"Model file not found at {MODEL_PATH}")
             return
         try:
@@ -132,10 +132,10 @@ class TransformerBrain:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
                     self._scaler = joblib.load(SCALER_PATH)
-                logger.info(f"✅ Loaded feature scaler from {SCALER_PATH}")
+                logger.info(f"[OK] Loaded feature scaler from {SCALER_PATH}")
             
             self._loaded = True
-            logger.info(f"🤖 Transformer brain loaded successfully from {MODEL_PATH}")
+            logger.info(f"[BOT] Transformer brain loaded successfully from {MODEL_PATH}")
         except Exception as e:
             logger.error(f"Transformer brain load failed: {e}")
             _alert_transformer_load_failure(f"Exception during load: {e}")

@@ -11,9 +11,9 @@
 #   1. Fetch 15-min OHLCV + indicators
 #   2. Classify market regime (DUMP/ACCUM/UPTREND/DIST)
 #   3. All 3 brains cast weighted votes
-#   4. Committee tallies → winning action needs >60% weighted score
-#   5. Sentinel checks for danger → may veto or cap size
-#   6. Position sized by confidence tier (51% → tiny, 90% → large)
+#   4. Committee tallies -> winning action needs >60% weighted score
+#   5. Sentinel checks for danger -> may veto or cap size
+#   6. Position sized by confidence tier (51% -> tiny, 90% -> large)
 #   7. Order placed
 
 import asyncio
@@ -84,7 +84,7 @@ def load_state():
         entry_prices.update(data.get("entry_prices", {}))
         peak_prices.update(data.get("peak_prices", {}))
         cooldowns.update(data.get("cooldowns", {}))
-        logger.info("💾 Restored persistent state from disk")
+        logger.info("[DISK] Restored persistent state from disk")
     except Exception as e:
         logger.warning(f"State load failed: {e}")
 
@@ -98,19 +98,19 @@ async def run():
         logger.warning(f"Database init failed (continuing without DB): {e}")
 
     load_state()
-    logger.info("🧠 Apex Committee Bot started — 4-brain ensemble")
+    logger.info("[BRAIN] Apex Committee Bot started — 4-brain ensemble")
     logger.info(f"⚖️  Brain weights: Transformer=50% | Quant=30% | Momentum=20%")
     logger.info(f"🛡️  Sentinel active — veto threshold ATR>{6}%")
     logger.info(f"📋 Symbols: {SYMBOLS}")
 
     try:
         await send_discord_alert(
-            title="🧠 Apex Committee Bot Started",
+            title="[BRAIN] Apex Committee Bot Started",
             description=(
                 "**Brains:** Transformer (50%) + Quant (30%) + Momentum (20%)\n"
                 "**Sentinel:** Active — vetoes on volatility/anomaly\n"
                 f"**Symbols:** {', '.join(SYMBOLS)}\n"
-                "**Confidence sizing:** 51%→tiny | 75%→medium | 90%→large"
+                "**Confidence sizing:** 51%->tiny | 75%->medium | 90%->large"
             ),
             color=0x7B2FBE,
         )
@@ -135,17 +135,17 @@ async def run():
             drawdown = (equity - start_equity) / start_equity if start_equity > 0 else 0.0
 
             logger.info(
-                f"📊 Equity: ${equity:,.2f} | BP: ${buying_power:,.2f} | "
+                f"[CHART] Equity: ${equity:,.2f} | BP: ${buying_power:,.2f} | "
                 f"Drawdown: {drawdown*100:.2f}% | Positions: {len(entry_times)}/{MAX_OPEN_POSITIONS}"
             )
 
             # Liquidate only when drawdown exceeds permitted loss threshold (negative value)
             # MAX_DRAWDOWN_STOP is a negative number (e.g., -0.10 = 10% loss limit)
             if drawdown <= MAX_DRAWDOWN_STOP and drawdown < 0:
-                logger.error(f"🚨 MAX DRAWDOWN {drawdown*100:.1f}% — liquidating all")
+                logger.error(f"[ALERT] MAX DRAWDOWN {drawdown*100:.1f}% — liquidating all")
                 try:
                     await send_discord_alert(
-                        title="🚨 EMERGENCY: Max Drawdown",
+                        title="[ALERT] EMERGENCY: Max Drawdown",
                         description=f"Drawdown: {drawdown*100:.1f}%\nAll positions liquidated.",
                         color=0xFF0000,
                     )
@@ -160,7 +160,7 @@ async def run():
 
             # ── Parallel OHLCV fetch ─────────────────────────────────────────
             # Fetch all symbols' OHLCV data concurrently to avoid sequential
-            # network latency (3 symbols × ~200ms = ~600ms → ~200ms with gather)
+            # network latency (3 symbols × ~200ms = ~600ms -> ~200ms with gather)
             ohlcv_data = await asyncio.gather(*[get_ohlcv(s) for s in SYMBOLS])
 
             # ── Per-symbol loop ────────────────────────────────────────────
@@ -171,7 +171,7 @@ async def run():
                     has_pos    = pos_data is not None and pos_data["qty"] > 0
 
                     if df is None:
-                        logger.warning(f"⚠️ No data for {symbol} — skipping")
+                        logger.warning(f"[!]️ No data for {symbol} — skipping")
                         continue
 
                     indicators = compute_indicators(df)
@@ -189,7 +189,7 @@ async def run():
                     # ── Attach df to snapshot (transformer brain needs it) ─────────
                     snapshot = MarketSnapshot(
                         symbol=symbol,
-                        candles=[],  # removed redundant df→dict conversion (not used by any brain)
+                        candles=[],  # removed redundant df->dict conversion (not used by any brain)
                         indicators=indicators,
                         regime=regime,
                         atr_pct=indicators["atr_pct"],
@@ -229,14 +229,14 @@ async def run():
                         if pnl_pct <= -effective_stop:
                             exit_reason = f"🛑 Stop loss {pnl_pct*100:.1f}% (decayed threshold: -{effective_stop*100:.2f}%)"
                         elif pnl_pct >= TAKE_PROFIT_PCT:
-                            exit_reason = f"✅ Take profit +{pnl_pct*100:.1f}%"
+                            exit_reason = f"[OK] Take profit +{pnl_pct*100:.1f}%"
                         elif price < trailing_stop_price and pnl_pct > 0:
-                            exit_reason = f"📉 Trailing stop (peak ${peak_price:.4f} → ${trailing_stop_price:.4f})"
+                            exit_reason = f"📉 Trailing stop (peak ${peak_price:.4f} -> ${trailing_stop_price:.4f})"
                         elif held_h >= MAX_HOLD_HOURS:
                             exit_reason = f"⏰ Max hold {held_h:.1f}h | PnL {pnl_pct*100:+.1f}%"
 
                         if exit_reason:
-                            logger.info(f"🔴 EXIT {symbol}: {exit_reason}")
+                            logger.info(f"[BULL] EXIT {symbol}: {exit_reason}")
                             success = await close_position(symbol)
                             if success:
                                 if pnl_pct < 0:
@@ -249,7 +249,7 @@ async def run():
                                 await save_state()
                                 try:
                                     await send_discord_alert(
-                                        title=f"{'🔴' if pnl_pct<0 else '🟢'} SOLD {symbol}",
+                                        title=f"{'[BULL]' if pnl_pct<0 else '[GREEN]'} SOLD {symbol}",
                                         description=(
                                             f"**Price:** ${price:.4f}\n"
                                             f"**PnL:** {pnl_pct*100:+.2f}%\n"
@@ -273,7 +273,7 @@ async def run():
                     # Cooldown check
                     if now < cooldowns.get(alpaca_sym, 0):
                         remaining = int(cooldowns[alpaca_sym] - now)
-                        logger.info(f"⏳ {symbol} on cooldown ({remaining}s remaining)")
+                        logger.info(f"[WAIT] {symbol} on cooldown ({remaining}s remaining)")
                         continue
 
                     # Max positions check
@@ -329,7 +329,7 @@ async def run():
 
                     qty = trade_value / price
                     logger.info(
-                        f"🟢 BUY {symbol} ${trade_value:.2f} @ ${price:.4f} "
+                        f"[GREEN] BUY {symbol} ${trade_value:.2f} @ ${price:.4f} "
                         f"| Committee: {committee.confidence:.3f} | Regime: {committee.regime}"
                     )
 
@@ -349,7 +349,7 @@ async def run():
                         )
                         try:
                             await send_discord_alert(
-                                title=f"🟢 BOUGHT {symbol}",
+                                title=f"[GREEN] BOUGHT {symbol}",
                                 description=(
                                     f"**Price:** ${price:.4f}\n"
                                     f"**Size:** ${trade_value:.2f}\n"
@@ -364,11 +364,11 @@ async def run():
                             pass
 
                 except Exception as symbol_err:
-                    logger.error(f"⚠️ Error processing {symbol}: {symbol_err}")
+                    logger.error(f"[!]️ Error processing {symbol}: {symbol_err}")
                     continue
 
         except Exception as e:
-            logger.error(f"⚠️ Main loop error: {e}", exc_info=True)
+            logger.error(f"[!]️ Main loop error: {e}", exc_info=True)
             await asyncio.sleep(30)
             continue
 

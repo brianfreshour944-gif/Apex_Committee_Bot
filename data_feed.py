@@ -221,9 +221,9 @@ async def get_orderbook_ratio(symbol: str) -> float | None:
     the event loop every time it ran.
     """
     try:
-        from alpaca.data.requests import CryptoOrderbookRequest
-        req = CryptoOrderbookRequest(symbol_or_symbols=symbol)
-        books = await asyncio.to_thread(data_client.get_crypto_orderbook, req)
+        from alpaca.data.requests import CryptoLatestOrderbookRequest
+        req = CryptoLatestOrderbookRequest(symbol_or_symbols=symbol)
+        books = await asyncio.to_thread(data_client.get_crypto_latest_orderbook, req)
         book = books.get(symbol) if isinstance(books, dict) else getattr(books, "data", {}).get(symbol)
         
         if not book:
