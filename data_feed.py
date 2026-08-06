@@ -174,15 +174,15 @@ def compute_indicators(df: pd.DataFrame) -> dict:
 
 # ── Account state ─────────────────────────────────────────────────────────────
 
-async def get_account_state() -> tuple[float, float]:
-    """Returns (equity, buying_power). Offloaded to thread to avoid blocking the event loop."""
+async def get_account_state() -> tuple[float, float, float]:
+    """Returns (equity, buying_power, cash). Offloaded to thread to avoid blocking."""
     from config import trading_client
     try:
         acct = await asyncio.to_thread(trading_client.get_account)
-        return float(acct.equity), float(acct.buying_power)
+        return float(acct.equity), float(acct.buying_power), float(acct.cash)
     except Exception as e:
         logger.error(f"Account fetch failed: {e}")
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
 
 
 async def get_all_positions() -> dict:

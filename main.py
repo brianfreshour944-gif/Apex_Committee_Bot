@@ -137,7 +137,7 @@ async def run():
             await write_heartbeat()
 
             # ── Account state ──────────────────────────────────────────────
-            equity, buying_power = await get_account_state()
+            equity, buying_power, cash = await get_account_state()
             if start_equity is None:
                 start_equity = equity
 
@@ -150,8 +150,11 @@ async def run():
             current_positions = await get_all_positions()
 
             # ── Portfolio-level equity verification ────────────────────────
-            # Reconcile Alpaca's equity with a manual sum of position values
-            computed_equity = buying_power
+            # Reconcile Alpaca's equity with a manual sum of cash + position values.
+            # DO NOT use buying_power here — it includes margin leverage (4x on paper),
+            # which would cause false mismatch warnings when equity differs from
+            # leveraged buying power.
+            computed_equity = cash
             for sym, pdata in current_positions.items():
                 computed_equity += pdata.get("market_value", 0.0)
             if equity > 0 and abs(computed_equity - equity) / equity > 0.02:
