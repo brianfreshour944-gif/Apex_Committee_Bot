@@ -6,7 +6,7 @@ from decimal import Decimal, ROUND_DOWN
 from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 
-from config import logger, trading_client, BOT_NAME
+from config import logger, trading_client, BOT_NAME, FEE_RATE, SELL_SLIPPAGE_BUFFER
 from database import record_trade
 
 
@@ -24,10 +24,21 @@ def _sanitize_price(price: float) -> float:
 
 async def place_order(
     symbol: str, side: OrderSide, qty: float, price: float = None
-) -> bool:
+) -> dict | None:
+    """
+    Places an order and returns a dict with execution details.
+
+    Returns dict with:
+        - success: bool
+        - qty: float (filled quantity)
+        - fill_price: float or None (actual fill price)
+        - fee: float (estimated fee)
+        - order_id: str
+    Returns None on failure.
+    """
     try:
         if side == OrderSide.BUY:
-            raw_limit   = price * 1.001 if price else None
+            raw_limit   = price * (1.0 + SELL_SLIPPAGE_BUFFER) if price else None
             limit_price = _sanitize_price(raw_limit) if raw_limit else None
             order_data  = LimitOrderRequest(
                 symbol=symbol, qty=qty, side=side,
@@ -35,17 +46,36 @@ async def place_order(
             )
         else:
             qty        = math.floor(qty * 1e8) / 1e8
-            order_data = MarketOrderRequest(
+            raw_limit  = price * (1.0 - SELL_SLIPPAGE_BUFFER) if price else None
+            limit_price = _sanitize_price(raw_limit) if raw_limit else None
+            order_data = LimitOrderRequest(
                 symbol=symbol, qty=qty, side=side,
-                time_in_force=TimeInForce.GTC,
+                time_in_force=TimeInForce.GTC, limit_price=limit_price,
             )
 
         # Offload blocking Alpaca HTTP + DB calls to threads
         order = await asyncio.to_thread(trading_client.submit_order, order_data=order_data)
-        await asyncio.to_thread(record_trade, BOT_NAME, symbol, side.value, qty, price, order_id=order.id)
-        logger.info(f"✅ {side.value.upper()} {symbol} qty={qty:.6f} @ ~${price:.4f}")
-        return True
+
+        # Extract actual fill information
+        fill_price = float(order.filled_avg_price) if order.filled_avg_price else None
+        filled_qty = float(order.filled_qty) if order.filled_qty else qty
+        fee = (filled_qty * (fill_price or price or 0)) * FEE_RATE if fill_price else (qty * (price or 0)) * FEE_RATE
+
+        # Record with actual fill price and fee
+        trade_price = fill_price if fill_price else price
+        await asyncio.to_thread(record_trade, BOT_NAME, symbol, side.value, qty,
+                                price, fill_price=trade_price, fee=fee,
+                                order_id=order.id)
+        logger.info(f"{'BUY' if side == OrderSide.BUY else 'SELL'} {symbol} qty={filled_qty:.6f} @ ${trade_price:.4f} | fee=${fee:.2f}")
+
+        return {
+            "success": True,
+            "qty": filled_qty,
+            "fill_price": trade_price,
+            "fee": fee,
+            "order_id": order.id,
+        }
 
     except Exception as e:
-        logger.error(f"❌ Order failed ({side.value} {symbol}): {e}")
-        return False
+        logger.error(f"Order failed ({side.value} {symbol}): {e}")
+        return None

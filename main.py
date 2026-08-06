@@ -30,6 +30,7 @@ from config import (
     STOP_LOSS_PCT, TAKE_PROFIT_PCT, TRAILING_STOP_PCT, MAX_HOLD_HOURS,
     COOLDOWN_SECONDS_BUY, SLEEP_PER_LOOP,
     STATE_FILE_PATH, MIN_BID_ASK_RATIO,
+    FEE_RATE,
 )
 from data_feed import get_ohlcv, compute_indicators, get_account_state, get_all_positions, get_orderbook_ratio
 from regime import classify_regime
@@ -41,7 +42,7 @@ from sentinel import sentinel
 from position_sizing import calculate_trade_size
 from orders import place_order
 from portfolio import normalize_symbol, close_position, close_all_positions, write_heartbeat
-from database import init_db, report_equity
+from database import init_db, report_equity, record_realized_pnl
 from notifications import send_discord_alert
 from models import MarketSnapshot
 
@@ -52,24 +53,37 @@ peak_prices:   dict  = {}    # {alpaca_sym: float}  — for trailing stop
 cooldowns:     dict  = {}    # {alpaca_sym: float}  — timestamp
 start_equity:  float | None = None
 
+# Lock for protecting shared state mutations and save_state
+_state_lock:  asyncio.Lock | None = None
+
+
+def get_state_lock():
+    """Lazily create asyncio.Lock (must be called from async context)."""
+    global _state_lock
+    if _state_lock is None:
+        _state_lock = asyncio.Lock()
+    return _state_lock
+
 
 async def save_state():
-    """Atomically save persistent state to disk (offloaded to thread)."""
-    try:
-        data = {
-            "entry_times":  {k: v.isoformat() for k, v in entry_times.items()},
-            "entry_prices": entry_prices,
-            "peak_prices":  peak_prices,
-            "cooldowns":    cooldowns,
-        }
-        tmp_path = f"{STATE_FILE_PATH}.tmp"
-        def _write():
-            with open(tmp_path, "w") as f:
-                json.dump(data, f, indent=2)
-            os.replace(tmp_path, STATE_FILE_PATH)
-        await asyncio.to_thread(_write)
-    except Exception as e:
-        logger.warning(f"State save failed: {e}")
+    """Atomically save persistent state to disk (protected by lock)."""
+    lock = get_state_lock()
+    async with lock:
+        try:
+            data = {
+                "entry_times":  {k: v.isoformat() for k, v in entry_times.items()},
+                "entry_prices": entry_prices,
+                "peak_prices":  peak_prices,
+                "cooldowns":    cooldowns,
+            }
+            tmp_path = f"{STATE_FILE_PATH}.tmp"
+            def _write():
+                with open(tmp_path, "w") as f:
+                    json.dump(data, f, indent=2)
+                os.replace(tmp_path, STATE_FILE_PATH)
+            await asyncio.to_thread(_write)
+        except Exception as e:
+            logger.warning(f"State save failed: {e}")
 
 
 def load_state():
@@ -132,6 +146,22 @@ async def run():
             except Exception:
                 pass  # non-critical
 
+            # ── Fetch all positions ────────────────────────────────────────
+            current_positions = await get_all_positions()
+
+            # ── Portfolio-level equity verification ────────────────────────
+            # Reconcile Alpaca's equity with a manual sum of position values
+            computed_equity = buying_power
+            for sym, pdata in current_positions.items():
+                computed_equity += pdata.get("market_value", 0.0)
+            if equity > 0 and abs(computed_equity - equity) / equity > 0.02:
+                logger.warning(
+                    f"[VERIFY] Equity mismatch: Alpaca=${equity:,.2f} "
+                    f"computed=${computed_equity:,.2f} "
+                    f"diff={(computed_equity - equity):,.2f} "
+                    f"({(computed_equity - equity)/equity*100:+.2f}%)"
+                )
+
             drawdown = (equity - start_equity) / start_equity if start_equity > 0 else 0.0
 
             logger.info(
@@ -154,8 +184,7 @@ async def run():
                 await close_all_positions()
                 break
 
-            # ── Fetch all positions ─────────────────────────────────────────
-            current_positions = await get_all_positions()
+            # ── Fetch all positions (already fetched above for equity verification) ──
             now               = time.time()
 
             # ── Parallel OHLCV fetch ─────────────────────────────────────────
@@ -200,19 +229,20 @@ async def run():
                         buying_power=buying_power,
                     )
                     snapshot.candles_df = df  # extra attr for transformer feature builder
-
                     # ── EXIT logic ─────────────────────────────────────────────
                     if has_pos:
-                        avg_entry  = entry_prices.get(alpaca_sym, pos_data["avg_entry"])
-                        peak_price = peak_prices.get(alpaca_sym, avg_entry)
+                        lock = get_state_lock()
+                        async with lock:
+                            avg_entry  = entry_prices.get(alpaca_sym, pos_data["avg_entry"])
+                            peak_price = peak_prices.get(alpaca_sym, avg_entry)
 
-                        # Update peak price for trailing stop
-                        if price > peak_price:
-                            peak_prices[alpaca_sym] = price
-                            peak_price = price
+                            # Update peak price for trailing stop
+                            if price > peak_price:
+                                peak_prices[alpaca_sym] = price
+                                peak_price = price
 
-                        pnl_pct    = (price - avg_entry) / avg_entry if avg_entry > 0 else 0.0
-                        entry_dt   = entry_times.get(alpaca_sym, datetime.now(timezone.utc))
+                            pnl_pct    = (price - avg_entry) / avg_entry if avg_entry > 0 else 0.0
+                            entry_dt   = entry_times.get(alpaca_sym, datetime.now(timezone.utc))
                         held_h     = (datetime.now(timezone.utc) - entry_dt).total_seconds() / 3600
 
                         # Calculate trailing stop price (FIXED: was previously undefined)
@@ -227,36 +257,69 @@ async def run():
 
                         exit_reason = None
                         if pnl_pct <= -effective_stop:
-                            exit_reason = f"🛑 Stop loss {pnl_pct*100:.1f}% (decayed threshold: -{effective_stop*100:.2f}%)"
+                            exit_reason = f"Stop loss {pnl_pct*100:.1f}% (decayed threshold: -{effective_stop*100:.2f}%)"
                         elif pnl_pct >= TAKE_PROFIT_PCT:
-                            exit_reason = f"[OK] Take profit +{pnl_pct*100:.1f}%"
+                            exit_reason = f"Take profit +{pnl_pct*100:.1f}%"
                         elif price < trailing_stop_price and pnl_pct > 0:
-                            exit_reason = f"📉 Trailing stop (peak ${peak_price:.4f} -> ${trailing_stop_price:.4f})"
+                            exit_reason = f"Trailing stop (peak ${peak_price:.4f} -> ${trailing_stop_price:.4f})"
                         elif held_h >= MAX_HOLD_HOURS:
-                            exit_reason = f"⏰ Max hold {held_h:.1f}h | PnL {pnl_pct*100:+.1f}%"
+                            exit_reason = f"Max hold {held_h:.1f}h | PnL {pnl_pct*100:+.1f}%"
 
                         if exit_reason:
-                            logger.info(f"[BULL] EXIT {symbol}: {exit_reason}")
-                            success = await close_position(symbol)
-                            if success:
-                                if pnl_pct < 0:
+                            logger.info(f"EXIT {symbol}: {exit_reason}")
+                            exit_result = await close_position(symbol, pos_data, current_price=price)
+                            if exit_result:
+                                fill_price = exit_result["fill_price"]
+                                exit_qty = exit_result["qty"]
+                                exit_fee = exit_result["fee"]
+
+                                # Calculate realized PnL in dollars (including fees)
+                                gross_pnl = (fill_price - avg_entry) * exit_qty
+                                buy_fee = avg_entry * exit_qty * FEE_RATE
+                                total_fee = buy_fee + exit_fee
+                                realized_pnl = gross_pnl - total_fee
+
+                                # Record realized PnL in database
+                                try:
+                                    await asyncio.to_thread(
+                                        record_realized_pnl, BOT_NAME, alpaca_sym, "SELL",
+                                        avg_entry, fill_price, exit_qty,
+                                        realized_pnl, gross_pnl, total_fee,
+                                        exit_result.get("order_id")
+                                    )
+                                except Exception:
+                                    pass
+
+                                logger.info(
+                                    f"Realized PnL {symbol}: "
+                                    f"entry=${avg_entry:.4f}, exit=${fill_price:.4f}, "
+                                    f"gross=${gross_pnl:.2f}, fees=${total_fee:.2f}, "
+                                    f"net=${realized_pnl:.2f}"
+                                )
+
+                                if realized_pnl < 0:
                                     sentinel.register_loss(symbol)
                                 else:
                                     sentinel.register_win(symbol)
-                                entry_times.pop(alpaca_sym, None)
-                                entry_prices.pop(alpaca_sym, None)
-                                peak_prices.pop(alpaca_sym, None)
+                                # Atomic cleanup of state under lock
+                                async with lock:
+                                    entry_times.pop(alpaca_sym, None)
+                                    entry_prices.pop(alpaca_sym, None)
+                                    peak_prices.pop(alpaca_sym, None)
                                 await save_state()
                                 try:
                                     await send_discord_alert(
-                                        title=f"{'[BULL]' if pnl_pct<0 else '[GREEN]'} SOLD {symbol}",
+                                        title=f"{'[BULL]' if realized_pnl<0 else '[GREEN]'} SOLD {symbol}",
                                         description=(
-                                            f"**Price:** ${price:.4f}\n"
-                                            f"**PnL:** {pnl_pct*100:+.2f}%\n"
+                                            f"**Exit price:** ${fill_price:.4f}\n"
+                                            f"**Entry price:** ${avg_entry:.4f}\n"
+                                            f"**PnL (net of fees):** ${realized_pnl:.2f} ({realized_pnl/(avg_entry * exit_qty if avg_entry * exit_qty > 0 else 1)*100:+.2f}%)\n"
+                                            f"**Gross PnL:** ${gross_pnl:.2f}\n"
+                                            f"**Fees:** ${total_fee:.2f}\n"
                                             f"**Reason:** {exit_reason}\n"
                                             f"**Regime:** {regime}"
                                         ),
-                                        color=0xFF4444 if pnl_pct < 0 else 0x44FF44,
+                                        color=0xFF4444 if realized_pnl < 0 else 0x44FF44,
                                     )
                                 except Exception:
                                     pass
@@ -324,22 +387,26 @@ async def run():
                         continue
 
                     if buying_power < trade_value:
-                        logger.warning(f"🚫 Insufficient BP (${buying_power:.2f}) for ${trade_value:.2f}")
+                        logger.warning(f"Insufficient BP (${buying_power:.2f}) for ${trade_value:.2f}")
                         continue
 
                     qty = trade_value / price
                     logger.info(
-                        f"[GREEN] BUY {symbol} ${trade_value:.2f} @ ${price:.4f} "
+                        f"BUY {symbol} ${trade_value:.2f} @ ${price:.4f} "
                         f"| Committee: {committee.confidence:.3f} | Regime: {committee.regime}"
                     )
 
-                    success = await place_order(symbol, OrderSide.BUY, qty, price)
-                    if success:
-                        entry_times[alpaca_sym]  = datetime.now(timezone.utc)
-                        entry_prices[alpaca_sym] = price
-                        peak_prices[alpaca_sym]  = price
-                        cooldowns[alpaca_sym]    = now + COOLDOWN_SECONDS_BUY
-                        buying_power            -= trade_value
+                    success_result = await place_order(symbol, OrderSide.BUY, qty, price)
+                    if success_result and success_result.get("success"):
+                        fill_price = success_result.get("fill_price") or price
+                        # Atomic update of all shared state under lock
+                        lock = get_state_lock()
+                        async with lock:
+                            entry_times[alpaca_sym]  = datetime.now(timezone.utc)
+                            entry_prices[alpaca_sym] = fill_price
+                            peak_prices[alpaca_sym]  = fill_price
+                            cooldowns[alpaca_sym]    = now + COOLDOWN_SECONDS_BUY
+                            buying_power            -= trade_value
                         await save_state()
 
                         # Format vote breakdown for Discord
@@ -352,6 +419,8 @@ async def run():
                                 title=f"[GREEN] BOUGHT {symbol}",
                                 description=(
                                     f"**Price:** ${price:.4f}\n"
+                                    f"**Fill price:** ${fill_price:.4f}\n"
+                                    f"**Fee:** ${success_result.get('fee', 0):.2f}\n"
                                     f"**Size:** ${trade_value:.2f}\n"
                                     f"**Committee score:** {committee.confidence:.3f}\n"
                                     f"**Regime:** {committee.regime}\n"

@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     max_open_positions: int = 3
     cooldown_seconds_buy: int = 900
     
+    # Fee and slippage
+    fee_rate: float = 0.001  # 0.1% per side (Alpaca crypto default)
+    sell_slippage_buffer: float = 0.002  # 0.2% slippage buffer for SELL limit orders
+    
     sentinel_max_atr_pct: float = 6.0
     sentinel_max_vol_mult: float = 4.0
     max_consecutive_losses: int = 4
@@ -104,6 +108,8 @@ MAX_DRAWDOWN_STOP = settings.max_drawdown_stop
 MIN_BID_ASK_RATIO  = settings.min_bid_ask_ratio
 STATE_FILE_PATH    = settings.state_file_path
 SLEEP_PER_LOOP = settings.sleep_per_loop
+FEE_RATE           = settings.fee_rate
+SELL_SLIPPAGE_BUFFER = settings.sell_slippage_buffer
 
 def _resolve_path(path_val: str, default_name: str) -> str:
     if os.path.exists(path_val):

@@ -60,16 +60,23 @@ def init_db():
             cur.execute("""CREATE TABLE IF NOT EXISTS trades (
                 id SERIAL PRIMARY KEY, bot_name TEXT, exchange TEXT DEFAULT 'Alpaca',
                 symbol TEXT, side TEXT, price NUMERIC, quantity NUMERIC,
-                value NUMERIC, fee NUMERIC DEFAULT 0, order_id TEXT, timestamp TIMESTAMP DEFAULT NOW())""")
+                value NUMERIC, fee NUMERIC DEFAULT 0, fill_price NUMERIC,
+                order_id TEXT, timestamp TIMESTAMP DEFAULT NOW())""")
+            cur.execute("""CREATE TABLE IF NOT EXISTS realized_pnl (
+                id SERIAL PRIMARY KEY, bot_name TEXT, symbol TEXT,
+                side TEXT, entry_price NUMERIC, exit_price NUMERIC,
+                qty NUMERIC, realized_pnl NUMERIC,
+                gross_pnl NUMERIC, fee_total NUMERIC,
+                order_id TEXT, timestamp TIMESTAMP DEFAULT NOW())""")
         conn.commit()
-        logger.info("📘 DB initialised")
+        logger.info("DB initialised")
     except Exception as e:
         logger.warning(f"DB init failed: {e}")
     finally:
         _put_conn(conn)
 
 
-def record_trade(bot_name, symbol, side, qty, price, pnl_pct=None, order_id=None):
+def record_trade(bot_name, symbol, side, qty, price, fill_price=None, fee=0.0, order_id=None):
     conn = None
     try:
         conn = _get_conn()
@@ -77,12 +84,33 @@ def record_trade(bot_name, symbol, side, qty, price, pnl_pct=None, order_id=None
             return
         with conn.cursor() as cur:
             value = (price or 0) * qty
-            cur.execute("""INSERT INTO trades (bot_name,exchange,symbol,side,price,quantity,value,fee,order_id,timestamp)
-                VALUES (%s,'Alpaca',%s,%s,%s,%s,%s,0,%s,NOW())""",
-                (bot_name, symbol, side, price or 0, qty, value, str(order_id) if order_id else None))
+            cur.execute("""INSERT INTO trades (bot_name,exchange,symbol,side,price,quantity,value,fee,fill_price,order_id,timestamp)
+                VALUES (%s,'Alpaca',%s,%s,%s,%s,%s,%s,%s,NOW())""",
+                (bot_name, symbol, side, price or 0, qty, value, fee, fill_price, str(order_id) if order_id else None))
         conn.commit()
     except Exception as e:
         logger.error(f"DB trade failed: {e}")
+    finally:
+        _put_conn(conn)
+
+
+def record_realized_pnl(bot_name, symbol, side, entry_price, exit_price, qty,
+                        realized_pnl, gross_pnl, fee_total, order_id=None):
+    conn = None
+    try:
+        conn = _get_conn()
+        if conn is None:
+            return
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO realized_pnl
+                (bot_name, symbol, side, entry_price, exit_price, qty,
+                 realized_pnl, gross_pnl, fee_total, order_id, timestamp)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
+                (bot_name, symbol, side, entry_price, exit_price, qty,
+                 realized_pnl, gross_pnl, fee_total, str(order_id) if order_id else None))
+        conn.commit()
+    except Exception as e:
+        logger.error(f"DB realized PnL failed: {e}")
     finally:
         _put_conn(conn)
 
