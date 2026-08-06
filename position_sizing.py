@@ -43,8 +43,8 @@ def calculate_trade_size(
         return 0.0
 
     logger.info(
-        f"💰 Size: ${trade_value:.2f} "
-        f"(conf={committee_confidence:.3f} → {pct*100:.0f}% equity"
-        f"{f' × {sentinel_cap:.0%} sentinel cap' if sentinel_cap else ''})"
+        f"Size: ${trade_value:.2f} "
+        f"(conf={committee_confidence:.3f} -> {pct*100:.0f}% equity"
+        f"{f' x {sentinel_cap:.0%} sentinel cap' if sentinel_cap else ''})"
     )
     return round(trade_value, 2)
