@@ -1,514 +1,499 @@
-#!/usr/bin/env python3
 """
-Performance audit script for Apex Committee Bot.
-Measures actual latencies of blocking operations and detects event loop stalls.
-"""
+Performs a performance audit of the Apex Committee Bot by measuring actual
+event-loop blocking using a concurrent ticker task.
 
+Usage:
+    python perf_audit.py
+
+The ticker runs every 50ms and records the time between scheduled ticks.
+If the gap exceeds a threshold, it means the event loop was blocked.
+
+For each measured component, we get:
+  - min/max/avg delay (ms)  — how long the event loop was starved
+  - max single-block duration (ms) — worst single blocking call
+  - count of blocks above threshold
+"""
 import asyncio
-import time
-import statistics
+import io
 import json
 import os
 import sys
-import logging
-from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+import time
 
-# Suppress verbose logging from the bot modules to avoid unicode encoding issues
-logging.getLogger("ApexBot").setLevel(logging.WARNING)
+# Force UTF-8 stdout/stderr before any other imports (fixes emoji logging on Windows)
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+if sys.stdout.encoding != "utf-8":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
-# Add project to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-# ─── Event loop stall detector ───
-class StallDetector:
-    def __init__(self, threshold_ms=10):
-        self.threshold_ms = threshold_ms
-        self.stalls = []
-        self._task = None
-        self._running = False
-        self._last_tick = time.monotonic()
-
-    async def _ticker(self):
-        self._running = True
-        self._last_tick = time.monotonic()
-        while self._running:
-            await asyncio.sleep(0.001)  # 1ms resolution
-            now = time.monotonic()
-            elapsed_ms = (now - self._last_tick) * 1000
-            if elapsed_ms > self.threshold_ms:
-                self.stalls.append({
-                    "duration_ms": round(elapsed_ms, 2),
-                    "timestamp": now,
-                })
-            self._last_tick = now
-
-    async def start(self):
-        self._task = asyncio.create_task(self._ticker())
-
-    async def stop(self):
-        self._running = False
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-
-    def report(self):
-        if not self.stalls:
-            return "No stalls detected"
-        total_stall_time = sum(s["duration_ms"] for s in self.stalls)
-        return {
-            "stall_count": len(self.stalls),
-            "total_stall_ms": round(total_stall_time, 2),
-            "max_stall_ms": round(max(s["duration_ms"] for s in self.stalls), 2),
-            "avg_stall_ms": round(statistics.mean(s["duration_ms"] for s in self.stalls), 2),
-            "stalls": self.stalls[:10],  # first 10
-        }
-
-
-# ─── Benchmark helpers ───
-async def benchmark_async(fn, *args, iterations=10, warmup=2, **kwargs):
-    """Benchmark an async function."""
-    # Warmup
-    for _ in range(warmup):
-        result = fn(*args, **kwargs)
-        if asyncio.iscoroutine(result):
-            await result
-    
-    times = []
-    for _ in range(iterations):
-        start = time.perf_counter()
-        result = fn(*args, **kwargs)
-        if asyncio.iscoroutine(result):
-            await result
-        elapsed = (time.perf_counter() - start) * 1000
-        times.append(elapsed)
-    
-    return {
-        "mean_ms": round(statistics.mean(times), 2),
-        "median_ms": round(statistics.median(times), 2),
-        "min_ms": round(min(times), 2),
-        "max_ms": round(max(times), 2),
-        "stdev_ms": round(statistics.stdev(times) if len(times) > 1 else 0, 2),
-        "samples": times,
-    }
-
-
-def benchmark_sync(fn, *args, iterations=10, warmup=2, **kwargs):
-    """Benchmark a sync function."""
-    for _ in range(warmup):
-        fn(*args, **kwargs)
-    
-    times = []
-    for _ in range(iterations):
-        start = time.perf_counter()
-        fn(*args, **kwargs)
-        elapsed = (time.perf_counter() - start) * 1000
-        times.append(elapsed)
-    
-    return {
-        "mean_ms": round(statistics.mean(times), 2),
-        "median_ms": round(statistics.median(times), 2),
-        "min_ms": round(min(times), 2),
-        "max_ms": round(max(times), 2),
-        "stdev_ms": round(statistics.stdev(times) if len(times) > 1 else 0, 2),
-        "samples": times,
-    }
-
-
-# ─── Mock data for testing ───
 import pandas as pd
 import numpy as np
 
-def create_mock_ohlcv(symbol="BTC/USD", rows=80):
-    """Create mock OHLCV data for testing."""
-    dates = pd.date_range(end=datetime.now(timezone.utc), periods=rows, freq="15min")
-    base = 60000 if "BTC" in symbol else (3000 if "ETH" in symbol else 150)
-    close_prices = base + np.random.randn(rows).cumsum() * 100
+# Set dummy env vars BEFORE importing config
+os.environ.setdefault("APCA_API_KEY_ID", "test_key")
+os.environ.setdefault("APCA_API_SECRET_KEY", "test_secret")
+os.environ.setdefault("APCA_API_PAPER", "true")
+
+from config import (
+    BOT_NAME, SYMBOLS, STATE_FILE_PATH,
+    SEQUENCE_LEN, SIZING_TIERS, MAX_SINGLE_TRADE_USD, MIN_ORDER_USD,
+    STOP_LOSS_PCT, TAKE_PROFIT_PCT, TRAILING_STOP_PCT, MAX_HOLD_HOURS,
+    MAX_OPEN_POSITIONS, COOLDOWN_SECONDS_BUY, SENTINEL_MAX_ATR_PCT,
+    SENTINEL_MAX_VOL_MULT, MAX_CONSECUTIVE_LOSSES, MAX_DRAWDOWN_STOP,
+    MIN_BID_ASK_RATIO, SLEEP_PER_LOOP, FEE_RATE, SELL_SLIPPAGE_BUFFER,
+    MODEL_PATH, SCALER_PATH, BRAIN_WEIGHTS, MIN_VOTE_SCORE,
+)
+from alpaca.trading.enums import OrderSide
+from data_feed import get_account_state, get_all_positions, get_orderbook_ratio
+from sentinel import sentinel
+from committee import run_committee
+from models import MarketSnapshot, AIDecision, CommitteeResult
+from position_sizing import calculate_trade_size
+from feature_engineering import add_features, FEATURE_COLS
+from regime import classify_regime
+from data_feed import compute_indicators
+
+# ── Event loop blocker measurement ──────────────────────────────────────────────
+
+BLOCK_THRESHOLD_MS = 5.0  # blocks above this are "meaningful"
+
+class BlockerTracker:
+    """Runs a high-frequency ticker to detect event loop stalls."""
+    def __init__(self, interval_ms=50, threshold_ms=5.0):
+        self.interval_ms = interval_ms
+        self.threshold_ms = threshold_ms
+        self.delays = []
+        self.max_block = 0.0
+        self.block_count = 0
+        self._running = False
+
+    async def start(self):
+        self._running = True
+        self._task = asyncio.create_task(self._tick())
+
+    async def stop(self):
+        self._running = False
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+
+    async def _tick(self):
+        last = time.perf_counter()
+        while self._running:
+            await asyncio.sleep(self.interval_ms / 1000.0)
+            now = time.perf_counter()
+            delay_ms = (now - last - self.interval_ms / 1000.0) * 1000
+            self.delays.append(delay_ms)
+            if delay_ms > self.max_block:
+                self.max_block = delay_ms
+            if delay_ms > self.threshold_ms:
+                self.block_count += 1
+            last = now
+
+    def report(self):
+        if not self.delays:
+            return {
+                "min_delay_ms": 0.0,
+                "max_delay_ms": 0.0,
+                "avg_delay_ms": 0.0,
+                "p95_delay_ms": 0.0,
+                "max_single_block_ms": 0.0,
+                "block_count_above_threshold": 0,
+                "total_ticks": 0,
+                "threshold_ms": self.threshold_ms,
+            }
+        d = self.delays
+        return {
+            "min_delay_ms": round(min(d), 3),
+            "max_delay_ms": round(max(d), 3),
+            "avg_delay_ms": round(sum(d) / len(d), 3),
+            "p95_delay_ms": round(sorted(d)[int(len(d) * 0.95)], 3),
+            "max_single_block_ms": round(self.max_block, 3),
+            "block_count_above_threshold": self.block_count,
+            "total_ticks": len(d),
+            "threshold_ms": self.threshold_ms,
+        }
+
+
+# ── Synthetic data for measurement ──────────────────────────────────────────────
+
+def make_synthetic_df(n=50):
+    """Create a realistic DataFrame for feature engineering + model inference."""
+    np.random.seed(42)
+    base_price = 62000.0
+    returns = np.random.randn(n) * 0.015
+    prices = base_price * np.exp(np.cumsum(returns))
+
     df = pd.DataFrame({
-        "open": close_prices - 10,
-        "high": close_prices + 20,
-        "low": close_prices - 20,
-        "close": close_prices,
-        "volume": np.random.rand(rows) * 10,
-        "vwap": close_prices,
-    }, index=dates)
+        "open":  prices * (1 - np.random.rand(n) * 0.001),
+        "high":  prices * (1 + np.random.rand(n) * 0.002),
+        "low":   prices * (1 - np.random.rand(n) * 0.002),
+        "close": prices,
+        "volume": np.random.rand(n) * 100 + 50,
+        "vwap":  prices,
+        "trade_count": np.random.randint(50, 200, n),
+    })
     return df
 
 
-# ─── Main audit ───
-async def run_performance_audit():
-    print("=" * 70)
-    print("APEX COMMITTEE BOT — PERFORMANCE AUDIT")
-    print("=" * 70)
-    print()
+# ── Individual component benchmarks ───────────────────────────────────────────
 
-    results = {}
-    detector = StallDetector(threshold_ms=5)
-    await detector.start()
+async def bench_feature_engineering(tracker):
+    """Bench: add_features (11 institutional features, 50-row df) + compute_indicators
+    — both run synchronously in the main event loop (not offloaded to thread)."""
+    df = make_synthetic_df(50)
+    times_feats = []
+    times_inds = []
+    
+    for _ in range(20):
+        t0 = time.perf_counter()
+        feats = add_features(df.copy())
+        t1 = time.perf_counter()
+        ind = compute_indicators(df)
+        t2 = time.perf_counter()
+        times_feats.append(t1 - t0)
+        times_inds.append(t2 - t1)
+    
+    print(f"  add_features avg: {sum(times_feats)/len(times_feats)*1000:.1f}ms (SYNC in event loop)")
+    print(f"  compute_indicators avg: {sum(times_inds)/len(times_inds)*1000:.1f}ms (SYNC in event loop)")
+    return feats
 
-    # ─── Import all modules ───
-    print("[1/9] Importing modules...")
-    from config import (
-        SEQUENCE_LEN, STATE_FILE_PATH, HEARTBEAT_PATH,
-        trading_client, data_client, logger
-    )
-    from data_feed import (
-        get_ohlcv, compute_indicators, get_account_state,
-        get_all_positions, get_orderbook_ratio
-    )
-    from regime import classify_regime
+
+async def bench_compute_indicators(tracker):
+    """Bench: compute_indicators (RSI, MACD, BB, EMA, ATR, volume, momentum)."""
+    df = make_synthetic_df(80)
+    for _ in range(20):
+        ind = compute_indicators(df)
+    return ind
+
+
+async def bench_model_inference(tracker):
+    """Bench: transformer_brain.decide() — PyTorch GrokGQA transformer forward pass.
+    
+    Measures both total time AND event-loop blocking. PyTorch CPU ops use
+    intra-op parallelism via OMP threads that hold the GIL, which can block
+    the event loop even when offloaded via asyncio.to_thread.
+    
+    This benchmark measures whether the event loop is actually blocked during
+    the asyncio.to_thread call by running the ticker concurrently.
+    """
     from brains.transformer import transformer_brain
-    from brains.quant import quant_brain
-    from brains.momentum import momentum_brain
-    from committee import run_committee
-    from sentinel import sentinel, SentinelReport
-    from position_sizing import calculate_trade_size
-    from orders import place_order
-    from portfolio import close_position, close_all_positions, write_heartbeat
-    from database import init_db, report_equity, record_trade
-    from notifications import send_discord_alert
-    from models import MarketSnapshot, AIDecision, CommitteeResult
 
-    print("    OK Imports complete")
-    print()
+    if not transformer_brain._loaded:
+        return None
 
-    # ─── 2. Transformer model inference ───
-    print("[2/9] Measuring transformer_brain.decide() latency...")
-    print("    (This runs PyTorch CPU inference — the heaviest operation)")
-    
-    # Create a mock snapshot with enough data
-    mock_df = create_mock_ohlcv("BTC/USD", 80)
-    mock_indicators = compute_indicators(mock_df)
-    mock_regime = classify_regime(mock_df, mock_indicators)
-    
+    df = make_synthetic_df(SEQUENCE_LEN)
     snapshot = MarketSnapshot(
         symbol="BTC/USD",
         candles=[],
-        indicators=mock_indicators,
-        regime=mock_regime,
-        atr_pct=mock_indicators["atr_pct"],
+        indicators={},
+        regime="UPTREND",
+        atr_pct=1.5,
         has_position=False,
         position_size=0.0,
         entry_price=None,
         equity=10000.0,
         buying_power=10000.0,
     )
-    snapshot.candles_df = mock_df
+    snapshot.candles_df = df
 
-    # Check if model is loaded
-    if transformer_brain._loaded:
-        print("    Model loaded — measuring inference...")
-        transformer_result = await benchmark_async(
-            lambda: asyncio.to_thread(transformer_brain.decide, snapshot),
-            iterations=5, warmup=1
-        )
-        results["transformer_inference"] = transformer_result
-        print(f"    Mean: {transformer_result['mean_ms']:.1f}ms  "
-              f"Median: {transformer_result['median_ms']:.1f}ms  "
-              f"Max: {transformer_result['max_ms']:.1f}ms")
-    else:
-        print("    Model NOT loaded — skipping inference measurement")
-        results["transformer_inference"] = {"error": "model_not_loaded"}
-
-    print()
-
-    # ─── 3. Quant & Momentum brains (should be fast) ───
-    print("[3/9] Measuring quant_brain.decide() & momentum_brain.decide() latency...")
-    quant_result = await benchmark_async(
-        lambda: asyncio.to_thread(quant_brain.decide, snapshot),
-        iterations=20, warmup=2
-    )
-    results["quant_brain"] = quant_result
-    print(f"    quant_brain:  Mean: {quant_result['mean_ms']:.2f}ms  Max: {quant_result['max_ms']:.2f}ms")
-
-    momentum_result = await benchmark_async(
-        lambda: asyncio.to_thread(momentum_brain.decide, snapshot),
-        iterations=20, warmup=2
-    )
-    results["momentum_brain"] = momentum_result
-    print(f"    momentum_brain: Mean: {momentum_result['mean_ms']:.2f}ms  Max: {momentum_result['max_ms']:.2f}ms")
-    print()
-
-    # ─── 4. Committee & Sentinel ───
-    print("[4/9] Measuring committee & sentinel latency...")
+    # Measure with finer ticker (10ms) for more sensitivity
+    fine_tracker = BlockerTracker(interval_ms=10, threshold_ms=5.0)
+    await fine_tracker.start()
     
-    mock_decisions = [
-        AIDecision(brain="transformer", action="BUY", confidence=0.75, regime=mock_regime, reason="test"),
-        AIDecision(brain="quant", action="BUY", confidence=0.65, regime=mock_regime, reason="test"),
-        AIDecision(brain="momentum", action="HOLD", confidence=0.5, regime=mock_regime, reason="test"),
+    import time
+    times = []
+    for _ in range(20):
+        t0 = time.perf_counter()
+        result = transformer_brain.decide(snapshot)
+        t1 = time.perf_counter()
+        times.append(t1 - t0)
+    
+    await fine_tracker.stop()
+    
+    ft_report = fine_tracker.report()
+    print(f"\n  [Ticker] Ticks: {ft_report['total_ticks']}, Max block: {ft_report['max_single_block_ms']:.1f}ms, #blocks>5ms: {ft_report['block_count_above_threshold']}")
+    
+    # Now measure with asyncio.to_thread (as main.py does)
+    fine_tracker2 = BlockerTracker(interval_ms=10, threshold_ms=5.0)
+    await fine_tracker2.start()
+    
+    times_threaded = []
+    for _ in range(20):
+        t0 = time.perf_counter()
+        result = await asyncio.to_thread(transformer_brain.decide, snapshot)
+        t1 = time.perf_counter()
+        times_threaded.append(t1 - t0)
+    
+    await fine_tracker2.stop()
+    
+    ft_report2 = fine_tracker2.report()
+    print(f"  [Threaded] Ticks: {ft_report2['total_ticks']}, Max block: {ft_report2['max_single_block_ms']:.1f}ms, #blocks>5ms: {ft_report2['block_count_above_threshold']}")
+    print(f"  [Time] Sync: {sum(times)/len(times)*1000:.1f}ms avg | Threaded: {sum(times_threaded)/len(times_threaded)*1000:.1f}ms avg")
+    
+    return result
+
+
+async def bench_quant_brain(tracker):
+    """Bench: quant_brain.decide() — pure TA indicators."""
+    from brains.quant import quant_brain
+
+    df = make_synthetic_df(80)
+    ind = compute_indicators(df)
+    snapshot = MarketSnapshot(
+        symbol="BTC/USD",
+        candles=[],
+        indicators=ind,
+        regime="UPTREND",
+        atr_pct=ind["atr_pct"],
+        has_position=False,
+        position_size=0.0,
+        entry_price=None,
+        equity=10000.0,
+        buying_power=10000.0,
+    )
+    snapshot.candles_df = df
+
+    for _ in range(20):
+        result = quant_brain.decide(snapshot)
+    return result
+
+
+async def bench_momentum_brain(tracker):
+    """Bench: momentum_brain.decide()."""
+    from brains.momentum import momentum_brain
+
+    df = make_synthetic_df(80)
+    ind = compute_indicators(df)
+    snapshot = MarketSnapshot(
+        symbol="BTC/USD",
+        candles=[],
+        indicators=ind,
+        regime="UPTREND",
+        atr_pct=ind["atr_pct"],
+        has_position=False,
+        position_size=0.0,
+        entry_price=None,
+        equity=10000.0,
+        buying_power=10000.0,
+    )
+    snapshot.candles_df = df
+
+    for _ in range(20):
+        result = momentum_brain.decide(snapshot)
+    return result
+
+
+async def bench_committee(tracker):
+    """Bench: run_committee with 3 decisions."""
+    df = make_synthetic_df(80)
+    ind = compute_indicators(df)
+    snapshot = MarketSnapshot(
+        symbol="BTC/USD",
+        candles=[],
+        indicators=ind,
+        regime="UPTREND",
+        atr_pct=ind["atr_pct"],
+        has_position=False,
+        position_size=0.0,
+        entry_price=None,
+        equity=10000.0,
+        buying_power=10000.0,
+    )
+
+    decisions = [
+        AIDecision(brain="transformer", action="BUY", confidence=0.75, regime="UPTREND", reason="test"),
+        AIDecision(brain="quant", action="BUY", confidence=0.65, regime="UPTREND", reason="test"),
+        AIDecision(brain="momentum", action="HOLD", confidence=0.50, regime="UPTREND", reason="test"),
     ]
-    
-    committee_result = await benchmark_async(
-        lambda: run_committee(snapshot, mock_decisions),
-        iterations=100, warmup=5
+
+    for _ in range(20):
+        result = run_committee(snapshot, decisions)
+    return result
+
+
+async def bench_sentinel(tracker):
+    """Bench: sentinel.check()."""
+    df = make_synthetic_df(80)
+    ind = compute_indicators(df)
+    snapshot = MarketSnapshot(
+        symbol="BTC/USD",
+        candles=[],
+        indicators=ind,
+        regime="UPTREND",
+        atr_pct=ind["atr_pct"],
+        has_position=False,
+        position_size=0.0,
+        entry_price=None,
+        equity=10000.0,
+        buying_power=10000.0,
     )
-    results["committee"] = committee_result
-    print(f"    run_committee: Mean: {committee_result['mean_ms']:.3f}ms  Max: {committee_result['max_ms']:.3f}ms")
 
-    sentinel_result = await benchmark_async(
-        lambda: sentinel.check(snapshot, CommitteeResult(action="BUY", confidence=0.7, regime=mock_regime, votes=[], vote_breakdown={})),
-        iterations=100, warmup=5
-    )
-    results["sentinel"] = sentinel_result
-    print(f"    sentinel.check: Mean: {sentinel_result['mean_ms']:.3f}ms  Max: {sentinel_result['max_ms']:.3f}ms")
-    print()
+    decisions = [
+        AIDecision(brain="transformer", action="BUY", confidence=0.75, regime="UPTREND", reason="test"),
+        AIDecision(brain="quant", action="BUY", confidence=0.65, regime="UPTREND", reason="test"),
+        AIDecision(brain="momentum", action="HOLD", confidence=0.50, regime="UPTREND", reason="test"),
+    ]
 
-    # ─── 5. Alpaca API calls (using to_thread) ───
-    print("[5/9] Measuring Alpaca API call latencies (via asyncio.to_thread)...")
-    print("    NOTE: These will hit REAL Alpaca API if credentials are set")
-    print("    Set APCA_API_KEY_ID=test to skip real calls")
-    
-    api_key = os.getenv("APCA_API_KEY_ID", "")
-    if api_key and api_key != "test_key":
-        print("    Real credentials detected — measuring live API calls...")
-        
-        # get_ohlcv
-        ohlcv_result = await benchmark_async(
-            lambda: get_ohlcv("BTC/USD"),
-            iterations=5, warmup=1
+    committee = run_committee(snapshot, decisions)
+
+    for _ in range(20):
+        result = sentinel.check(snapshot, committee)
+    return result
+
+
+async def bench_position_sizing(tracker):
+    """Bench: calculate_trade_size."""
+    for _ in range(20):
+        val = calculate_trade_size(10000.0, 0.75, sentinel_cap=1.0)
+    return val
+
+
+async def bench_state_save(tracker):
+    """Bench: save_state — JSON dump + os.replace."""
+    from main import save_state, entry_times, entry_prices, peak_prices, cooldowns
+    # Simulate some state
+    entry_times["BTCUSD"] = time.time()
+    entry_prices["BTCUSD"] = 62000.0
+    peak_prices["BTCUSD"] = 62500.0
+    cooldowns["BTCUSD"] = time.time() + 900
+    for _ in range(10):
+        await save_state()
+    return None
+
+
+async def bench_database_write(tracker):
+    """Bench: record_trade via asyncio.to_thread."""
+    from database import record_trade, report_equity, init_db
+    # Init DB (may fail silently if no DB URL)
+    await asyncio.to_thread(init_db)
+    for _ in range(10):
+        await asyncio.to_thread(
+            record_trade, BOT_NAME, "BTCUSD", "BUY", 0.01, 62000.0,
+            fill_price=62000.0, fee=1.0, order_id="test_order_123"
         )
-        results["get_ohlcv"] = ohlcv_result
-        print(f"    get_ohlcv: Mean: {ohlcv_result['mean_ms']:.1f}ms  Max: {ohlcv_result['max_ms']:.1f}ms")
+        await asyncio.to_thread(report_equity, BOT_NAME, 10000.0)
+    return None
 
-        # get_account_state
-        acct_result = await benchmark_async(
-            get_account_state,
-            iterations=5, warmup=1
-        )
-        results["get_account_state"] = acct_result
-        print(f"    get_account_state: Mean: {acct_result['mean_ms']:.1f}ms  Max: {acct_result['max_ms']:.1f}ms")
 
-        # get_all_positions
-        pos_result = await benchmark_async(
-            get_all_positions,
-            iterations=5, warmup=1
-        )
-        results["get_all_positions"] = pos_result
-        print(f"    get_all_positions: Mean: {pos_result['mean_ms']:.1f}ms  Max: {pos_result['max_ms']:.1f}ms")
+# ── Main harness ────────────────────────────────────────────────────────────────
 
-        # get_orderbook_ratio
-        ob_result = await benchmark_async(
-            lambda: get_orderbook_ratio("BTC/USD"),
-            iterations=5, warmup=1
-        )
-        results["get_orderbook_ratio"] = ob_result
-        print(f"    get_orderbook_ratio: Mean: {ob_result['mean_ms']:.1f}ms  Max: {ob_result['max_ms']:.1f}ms")
-    else:
-        print("    Test credentials — skipping live API measurements")
-        results["alpaca_api"] = {"skipped": "test_credentials"}
-    print()
+BENCHMARKS = [
+    ("feature_engineering", bench_feature_engineering, "add_features + compute_indicators — both run synchronously in main event loop (not offloaded to thread). Computes 11 institutional features + RSI/MACD/BB/EMA/ATR."),
+    ("compute_indicators", bench_compute_indicators, "Computes RSI, MACD, Bollinger Bands, EMA, ATR, volume ratio, momentum — synchronously in main loop."),
+    ("model_inference", bench_model_inference, "PyTorch GrokGQA transformer forward pass (4 layers, 128 embed, GQA attention) — runs via asyncio.to_thread, but torch CPU ops still use intra-op parallelism that can block."),
+    ("quant_brain", bench_quant_brain, "Pure-Python TA indicator scoring (5 indicators, regime-adaptive thresholds) — runs via asyncio.to_thread but CPU-bound Python."),
+    ("momentum_brain", bench_momentum_brain, "Volume + regime transition detection — pure Python, via asyncio.to_thread."),
+    ("committee_voting", bench_committee, "Weighted voting engine (3 brains, softmax-like decision aggregation) — synchronous Python."),
+    ("sentinel_check", bench_sentinel, "Risk checks (ATR, volume, consecutive losses) — synchronous Python."),
+    ("position_sizing", bench_position_sizing, "Confidence-tiered position sizing with sentinel cap — trivial synchronous Python."),
+    ("state_save", bench_state_save, "JSON state file write + os.replace — already offloaded to thread via asyncio.to_thread."),
+    ("database_write", bench_database_write, "record_trade + report_equity INSERT statements — already offloaded via asyncio.to_thread."),
+]
 
-    # ─── 6. Database operations ───
-    print("[6/9] Measuring database operation latencies...")
-    db_url = os.getenv("DATABASE_URL", "")
-    if db_url:
-        print("    DATABASE_URL set — measuring live DB...")
-        
-        init_result = await benchmark_async(
-            lambda: asyncio.to_thread(init_db),
-            iterations=3, warmup=0
-        )
-        results["init_db"] = init_result
-        print(f"    init_db: Mean: {init_result['mean_ms']:.1f}ms  Max: {init_result['max_ms']:.1f}ms")
 
-        equity_result = await benchmark_async(
-            lambda: asyncio.to_thread(report_equity, "perf_test", 10000.0),
-            iterations=10, warmup=2
-        )
-        results["report_equity"] = equity_result
-        print(f"    report_equity: Mean: {equity_result['mean_ms']:.1f}ms  Max: {equity_result['max_ms']:.1f}ms")
+async def run_benchmark(name, bench_fn, tracker):
+    """Run a single benchmark with the blocker tracker active and report."""
+    tracker.delays.clear()
+    tracker.max_block = 0.0
+    tracker.block_count = 0
 
-        trade_result = await benchmark_async(
-            lambda: asyncio.to_thread(record_trade, "perf_test", "BTC/USD", "BUY", 0.1, 60000.0),
-            iterations=10, warmup=2
-        )
-        results["record_trade"] = trade_result
-        print(f"    record_trade: Mean: {trade_result['mean_ms']:.1f}ms  Max: {trade_result['max_ms']:.1f}ms")
-    else:
-        print("    No DATABASE_URL — skipping live DB measurements")
-        results["database"] = {"skipped": "no_database_url"}
-    print()
-
-    # ─── 7. File I/O operations ───
-    print("[7/9] Measuring file I/O latencies...")
-    
-    # save_state (writes JSON to disk)
-    import json
-    test_state = {
-        "entry_times": {"BTCUSD": datetime.now(timezone.utc).isoformat()},
-        "entry_prices": {"BTCUSD": 60000.0},
-        "peak_prices": {"BTCUSD": 61000.0},
-        "cooldowns": {"BTCUSD": time.time() + 900},
-    }
-    
-    async def test_save_state():
-        data = test_state.copy()
-        tmp_path = f"{STATE_FILE_PATH}.perf_test_{os.getpid()}_{time.time_ns()}.tmp"
-        def _write():
-            with open(tmp_path, "w") as f:
-                json.dump(data, f, indent=2)
-            os.replace(tmp_path, f"{STATE_FILE_PATH}.perf_test_{os.getpid()}")
-        await asyncio.to_thread(_write)
-    
-    save_result = await benchmark_async(test_save_state, iterations=20, warmup=3)
-    results["save_state"] = save_result
-    print(f"    save_state (JSON write): Mean: {save_result['mean_ms']:.2f}ms  Max: {save_result['max_ms']:.2f}ms")
-    
-    # Clean up test file
+    # Reset tracker state for this bench
+    start = time.perf_counter()
     try:
-        os.remove(f"{STATE_FILE_PATH}.perf_test_{os.getpid()}")
-    except:
-        pass
+        result = await bench_fn(tracker)
+    except Exception as bench_err:
+        elapsed = time.perf_counter() - start
+        print(f"\nBENCHMARK: {name}")
+        print(f"Total time (20 iterations): {elapsed*1000:.1f}ms")
+        print(f"Avg per call: {elapsed/20.0*1000:.1f}ms")
+        print(f"ERROR: {bench_err}")
+        return {
+            "name": name,
+            "total_ms": round(elapsed * 1000, 1),
+            "avg_per_call_ms": round(elapsed / 20.0 * 1000, 1),
+            "error": str(bench_err),
+        }
 
-    # write_heartbeat
-    hb_result = await benchmark_async(write_heartbeat, iterations=20, warmup=3)
-    results["write_heartbeat"] = hb_result
-    print(f"    write_heartbeat: Mean: {hb_result['mean_ms']:.2f}ms  Max: {hb_result['max_ms']:.2f}ms")
-    print()
+    elapsed = time.perf_counter() - start
 
-    # ─── 8. Discord alerts ───
-    print("[8/9] Measuring Discord alert latency...")
-    webhook = os.getenv("DISCORD_WEBHOOK_URL", "")
-    if webhook:
-        print("    DISCORD_WEBHOOK_URL set — measuring live Discord...")
-        discord_result = await benchmark_async(
-            lambda: send_discord_alert("Perf Test", "Performance audit test message", 0x7B2FBE),
-            iterations=5, warmup=1
-        )
-        results["discord_alert"] = discord_result
-        print(f"    send_discord_alert: Mean: {discord_result['mean_ms']:.1f}ms  Max: {discord_result['max_ms']:.1f}ms")
-    else:
-        print("    No Discord webhook — skipping")
-        results["discord_alert"] = {"skipped": "no_webhook"}
-    print()
+    report = tracker.report()
+    avg_per_call = (elapsed / 20.0) * 1000  # 20 iterations per benchmark
 
-    # ─── 9. Feature engineering ───
-    print("[9/9] Measuring feature_engineering.add_features() latency...")
-    from feature_engineering import add_features, FEATURE_COLS
-    
-    feat_df = create_mock_ohlcv("BTC/USD", 100)
-    feat_result = await benchmark_async(
-        lambda: asyncio.to_thread(add_features, feat_df.copy()),
-        iterations=10, warmup=2
-    )
-    results["add_features"] = feat_result
-    print(f"    add_features (11 features, 100 rows): Mean: {feat_result['mean_ms']:.1f}ms  Max: {feat_result['max_ms']:.1f}ms")
-    print()
+    print(f"\n{'='*72}")
+    print(f"BENCHMARK: {name}")
+    print(f"Description: {BENCH_DESCRIPTIONS[name]}")
+    print(f"Total time (20 iterations): {elapsed*1000:.1f}ms")
+    print(f"Avg per call: {avg_per_call:.1f}ms")
+    print(f"Blocker tracker results:")
+    print(f"  Max single block: {report['max_single_block_ms']:.1f}ms")
+    print(f"  Blocks > {tracker.threshold_ms}ms: {report['block_count_above_threshold']}")
+    print(f"  Avg delay: {report['avg_delay_ms']:.1f}ms (over {report['total_ticks']} ticks)")
+    print(f"  P95 delay: {report['p95_delay_ms']:.1f}ms")
 
-    # ─── Stop stall detector ───
-    await detector.stop()
-    
-    # ─── Check for memory leaks / unbounded growth ───
-    print("Checking for unbounded data structures...")
-    import gc
-    gc.collect()
-    
-    # Check sentinel._consecutive_losses (should be bounded by symbols)
-    print(f"  sentinel._consecutive_losses: {len(sentinel._consecutive_losses)} entries")
-    
-    # Check momentum_brain._prev_regime
-    print(f"  momentum_brain._prev_regime: {len(momentum_brain._prev_regime)} entries")
-    
-    # Check global dicts in main.py (would need to import main)
-    from main import entry_times, entry_prices, peak_prices, cooldowns
-    print(f"  main.entry_times: {len(entry_times)} entries")
-    print(f"  main.entry_prices: {len(entry_prices)} entries")
-    print(f"  main.peak_prices: {len(peak_prices)} entries")
-    print(f"  main.cooldowns: {len(cooldowns)} entries")
-    
-    # Check notifications._session
-    from notifications import _session
-    print(f"  notifications._session: {'open' if _session and not _session.closed else 'closed/None'}")
-    
-    # Check database._pool
-    from database import _pool
-    print(f"  database._pool: {'initialized' if _pool else 'None'}")
-    print()
+    return {
+        "name": name,
+        "total_ms": round(elapsed * 1000, 1),
+        "avg_per_call_ms": round(avg_per_call, 1),
+        "max_block_ms": report["max_single_block_ms"],
+        "blocks_above_threshold": report["block_count_above_threshold"],
+        "p95_delay_ms": report["p95_delay_ms"],
+    }
 
-    # ─── Stall detection report ───
-    print("Event loop stall detection:")
-    stall_report = detector.report()
-    if isinstance(stall_report, str):
-        print(f"  {stall_report}")
-    else:
-        print(f"  Stalls detected: {stall_report['stall_count']}")
-        print(f"  Total stall time: {stall_report['total_stall_ms']:.1f}ms")
-        print(f"  Max single stall: {stall_report['max_stall_ms']:.1f}ms")
-        print(f"  Avg stall: {stall_report['avg_stall_ms']:.1f}ms")
-        for stall in stall_report['stalls'][:5]:
-            print(f"    - {stall['duration_ms']:.1f}ms at {stall['timestamp']:.3f}")
-    print()
 
-    # ─── Summary ───
-    print("=" * 70)
-    print("PERFORMANCE AUDIT SUMMARY")
-    print("=" * 70)
-    
-    # Key findings
-    print("\nCRITICAL (>100ms blocking):")
-    critical = []
-    for name, data in results.items():
-        if isinstance(data, dict) and "mean_ms" in data:
-            if data["mean_ms"] > 100:
-                critical.append(f"  {name}: {data['mean_ms']:.1f}ms mean, {data['max_ms']:.1f}ms max")
-    if critical:
-        for c in critical:
-            print(c)
-    else:
-        print("  None")
-    
-    print("\nHIGH (10-100ms blocking):")
-    high = []
-    for name, data in results.items():
-        if isinstance(data, dict) and "mean_ms" in data:
-            if 10 < data["mean_ms"] <= 100:
-                high.append(f"  {name}: {data['mean_ms']:.1f}ms mean, {data['max_ms']:.1f}ms max")
-    if high:
-        for h in high:
-            print(h)
-    else:
-        print("  None")
-    
-    print("\nMEDIUM (1-10ms):")
-    medium = []
-    for name, data in results.items():
-        if isinstance(data, dict) and "mean_ms" in data:
-            if 1 < data["mean_ms"] <= 10:
-                medium.append(f"  {name}: {data['mean_ms']:.1f}ms mean")
-    if medium:
-        for m in medium:
-            print(m)
-    else:
-        print("  None")
-    
-    print("\nLOW (<1ms):")
-    low = []
-    for name, data in results.items():
-        if isinstance(data, dict) and "mean_ms" in data:
-            if data["mean_ms"] <= 1:
-                low.append(f"  {name}: {data['mean_ms']:.3f}ms mean")
-    if low:
-        for l in low:
-            print(l)
-    else:
-        print("  None")
+BENCH_DESCRIPTIONS = {name: desc for name, _, desc in BENCHMARKS}
+
+
+async def main():
+    print("=" * 72)
+    print("PERFORMANCE AUDIT — Apex Committee Bot")
+    print(f"Python {sys.version}")
+    print(f"PyTorch available: ", end="")
+    try:
+        import torch
+        print(f"YES (version {torch.__version__})")
+    except ImportError:
+        print("NO")
+    print(f"BLOCK_THRESHOLD_MS = {BLOCK_THRESHOLD_MS}")
+    print(f"Ticker interval: 50ms (measures event loop stalls)")
+    print("=" * 72)
+
+    results = []
+    for name, bench_fn, desc in BENCHMARKS:
+        tracker = BlockerTracker(interval_ms=50, threshold_ms=BLOCK_THRESHOLD_MS)
+        await tracker.start()
+        try:
+            result = await run_benchmark(name, bench_fn, tracker)
+            results.append(result)
+        except Exception as e:
+            print(f"\nERROR in {name}: {e}")
+            results.append({
+                "name": name,
+                "error": str(e),
+            })
+        finally:
+            await tracker.stop()
+
+    # Summary
+    print("\n" + "=" * 72)
+    print("SUMMARY")
+    print("=" * 72)
+    print(f"{'Component':<25} {'Avg/Call':>10} {'Max Block':>12} {'#Blocks>5ms':>14}")
+    print("-" * 72)
+    for r in results:
+        if "error" in r:
+            print(f"{r['name']:<25} {'ERROR':>10} {'N/A':>12} {'N/A':>14}")
+        else:
+            print(f"{r['name']:<25} {r['avg_per_call_ms']:>7.1f}ms {r['max_block_ms']:>9.1f}ms {r['blocks_above_threshold']:>14}")
 
     # Save results
-    output_file = "perf_audit_results.json"
-    with open(output_file, "w") as f:
-        json.dump({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "results": results,
-            "stall_report": stall_report if isinstance(stall_report, dict) else {"stalls": 0},
-        }, f, indent=2)
-    print(f"\n[FILE] Full results saved to {output_file}")
-
-    return results
+    output_path = "perf_audit_results.json"
+    with open(output_path, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"\nResults saved to {output_path}")
 
 
 if __name__ == "__main__":
-    asyncio.run(run_performance_audit())
+    asyncio.run(main())

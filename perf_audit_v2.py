@@ -1,434 +1,353 @@
-#!/usr/bin/env python3
 """
-Performance audit v2: Full cycle simulation + before/after logging comparison.
-Measures actual latencies with concurrent stall detection.
+Full-cycle performance audit — simulates one trading cycle's worth of work
+and measures event-loop blocking.
 """
-
 import asyncio
-import time
-import statistics
-import json
 import os
 import sys
-import logging
+import time
+import io
 
-# Suppress logging to measure pure computation overhead
-logging.getLogger("ApexBot").setLevel(logging.WARNING)
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+if sys.stdout.encoding != "utf-8":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+os.environ.setdefault("APCA_API_KEY_ID", "test_key")
+os.environ.setdefault("APCA_API_SECRET_KEY", "test_secret")
+os.environ.setdefault("APCA_API_PAPER", "true")
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-# ─── Event loop stall detector ───
-class StallDetector:
-    def __init__(self, threshold_ms=10):
-        self.threshold_ms = threshold_ms
-        self.stalls = []
-        self._task = None
-        self._running = False
-        self._last_tick = time.monotonic()
-
-    async def _ticker(self):
-        self._running = True
-        self._last_tick = time.monotonic()
-        while self._running:
-            await asyncio.sleep(0.001)
-            now = time.monotonic()
-            elapsed_ms = (now - self._last_tick) * 1000
-            if elapsed_ms > self.threshold_ms:
-                self.stalls.append(elapsed_ms)
-            self._last_tick = now
-
-    async def start(self):
-        self._task = asyncio.create_task(self._ticker())
-
-    async def stop(self):
-        self._running = False
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-
-    def report(self):
-        if not self.stalls:
-            return {"stall_count": 0, "total_stall_ms": 0, "max_stall_ms": 0, "avg_stall_ms": 0}
-        return {
-            "stall_count": len(self.stalls),
-            "total_stall_ms": round(sum(self.stalls), 2),
-            "max_stall_ms": round(max(self.stalls), 2),
-            "avg_stall_ms": round(statistics.mean(self.stalls), 2),
-        }
-
-
-async def benchmark_async(fn, *args, iterations=10, warmup=2, **kwargs):
-    for _ in range(warmup):
-        result = fn(*args, **kwargs)
-        if asyncio.iscoroutine(result):
-            await result
-    
-    times = []
-    for _ in range(iterations):
-        start = time.perf_counter()
-        result = fn(*args, **kwargs)
-        if asyncio.iscoroutine(result):
-            await result
-        elapsed = (time.perf_counter() - start) * 1000
-        times.append(elapsed)
-    
-    return {
-        "mean_ms": round(statistics.mean(times), 2),
-        "median_ms": round(statistics.median(times), 2),
-        "min_ms": round(min(times), 2),
-        "max_ms": round(max(times), 2),
-        "stdev_ms": round(statistics.stdev(times) if len(times) > 1 else 0, 2),
-    }
-
-
-def benchmark_sync(fn, *args, iterations=10, warmup=2, **kwargs):
-    for _ in range(warmup):
-        fn(*args, **kwargs)
-    
-    times = []
-    for _ in range(iterations):
-        start = time.perf_counter()
-        fn(*args, **kwargs)
-        elapsed = (time.perf_counter() - start) * 1000
-        times.append(elapsed)
-    
-    return {
-        "mean_ms": round(statistics.mean(times), 2),
-        "median_ms": round(statistics.median(times), 2),
-        "min_ms": round(min(times), 2),
-        "max_ms": round(max(times), 2),
-        "stdev_ms": round(statistics.stdev(times) if len(times) > 1 else 0, 2),
-    }
-
-
-import pandas as pd
 import numpy as np
+import pandas as pd
 
-def create_mock_ohlcv(symbol="BTC/USD", rows=80):
-    dates = pd.date_range(end=datetime.now(timezone.utc), periods=rows, freq="15min")
-    base = 60000 if "BTC" in symbol else (3000 if "ETH" in symbol else 150)
-    close_prices = base + np.random.randn(rows).cumsum() * 100
+from config import STATE_FILE_PATH, SEQUENCE_LEN
+from data_feed import compute_indicators, get_account_state, get_all_positions
+from regime import classify_regime
+from brains.transformer import transformer_brain
+from brains.quant import quant_brain
+from brains.momentum import momentum_brain
+from committee import run_committee
+from sentinel import sentinel
+from position_sizing import calculate_trade_size
+from feature_engineering import add_features
+from models import MarketSnapshot
+
+
+def make_synthetic_df(n=80):
+    np.random.seed(42)
+    base_price = 62000.0
+    returns = np.random.randn(n) * 0.015
+    prices = base_price * np.exp(np.cumsum(returns))
     df = pd.DataFrame({
-        "open": close_prices - 10,
-        "high": close_prices + 20,
-        "low": close_prices - 20,
-        "close": close_prices,
-        "volume": np.random.rand(rows) * 10,
-        "vwap": close_prices,
-    }, index=dates)
+        "open": prices * (1 - np.random.rand(n) * 0.001),
+        "high": prices * (1 + np.random.rand(n) * 0.002),
+        "low": prices * (1 - np.random.rand(n) * 0.002),
+        "close": prices,
+        "volume": np.random.rand(n) * 100 + 50,
+        "vwap": prices,
+        "trade_count": np.random.randint(50, 200, n),
+    })
     return df
 
 
-from datetime import datetime, timezone
+class BlockerTracker:
+    def __init__(self, interval_ms=10, threshold_ms=5.0):
+        self.interval_ms = interval_ms
+        self.threshold_ms = threshold_ms
+        self.delays = []
+        self.max_block = 0.0
+        self.block_count = 0
+        self._running = False
+        self._task = None
 
-async def run_full_audit():
-    print("=" * 70)
-    print("APEX COMMITTEE BOT - PERFORMANCE AUDIT V2")
-    print("=" * 70)
-    
-    from config import logger as cfg_logger
-    cfg_logger.setLevel(logging.WARNING)
-    
-    from data_feed import (
-        compute_indicators, get_account_state, get_all_positions,
-    )
-    from regime import classify_regime
-    from brains.transformer import transformer_brain
-    from brains.quant import quant_brain
-    from brains.momentum import momentum_brain
-    from committee import run_committee
-    from sentinel import sentinel
-    from feature_engineering import add_features, FEATURE_COLS
-    from models import MarketSnapshot, AIDecision, CommitteeResult
-    from position_sizing import calculate_trade_size
-    
-    results = {}
-    detector = StallDetector(threshold_ms=10)
-    
-    # ─── 1. Full pipeline timing (no logging) ───
-    print("\n[1/7] Full per-symbol pipeline (no logging)...")
-    
-    mock_df = create_mock_ohlcv("BTC/USD", 80)
-    mock_indicators = compute_indicators(mock_df)
-    mock_regime = classify_regime(mock_df, mock_indicators)
-    
-    snapshot = MarketSnapshot(
-        symbol="BTC/USD",
-        candles=[],
-        indicators=mock_indicators,
-        regime=mock_regime,
-        atr_pct=mock_indicators["atr_pct"],
-        has_position=False,
-        position_size=0.0,
-        entry_price=None,
-        equity=10000.0,
-        buying_power=10000.0,
-    )
-    snapshot.candles_df = mock_df
-    
-    mock_decisions = [
-        AIDecision(brain="transformer", action="BUY", confidence=0.75, regime=mock_regime, reason="test"),
-        AIDecision(brain="quant", action="BUY", confidence=0.65, regime=mock_regime, reason="test"),
-        AIDecision(brain="momentum", action="HOLD", confidence=0.5, regime=mock_regime, reason="test"),
-    ]
-    
-    # Benchmark with logging SUPPRESSED (current state)
-    print("  Measuring with logging suppressed...")
-    
-    # Feature engineering (in thread)
-    feat_result = await benchmark_async(
-        lambda: asyncio.to_thread(add_features, mock_df.copy()),
-        iterations=10, warmup=2
-    )
-    results["add_features_silent"] = feat_result
-    
-    # Transformer inference (in thread)
-    if transformer_brain._loaded:
-        transformer_result = await benchmark_async(
-            lambda: asyncio.to_thread(transformer_brain.decide, snapshot),
-            iterations=5, warmup=1
-        )
-        results["transformer_silent"] = transformer_result
-    
-    # Quant brain (in thread)
-    quant_result = await benchmark_async(
-        lambda: asyncio.to_thread(quant_brain.decide, snapshot),
-        iterations=20, warmup=2
-    )
-    results["quant_silent"] = quant_result
-    
-    # Momentum brain (in thread)
-    momentum_result = await benchmark_async(
-        lambda: asyncio.to_thread(momentum_brain.decide, snapshot),
-        iterations=20, warmup=2
-    )
-    results["momentum_silent"] = momentum_result
-    
-    # Committee (sync, but suppressed logging)
-    committee_silent = await benchmark_async(
-        lambda: run_committee(snapshot, mock_decisions),
-        iterations=100, warmup=5
-    )
-    results["committee_silent"] = committee_silent
-    
-    # Sentinel
-    sentinel_result = await benchmark_async(
-        lambda: sentinel.check(snapshot, CommitteeResult(action="BUY", confidence=0.7, regime=mock_regime, votes=[], vote_breakdown={})),
-        iterations=100, warmup=5
-    )
-    results["sentinel_silent"] = sentinel_result
-    
-    # ─── 2. Full cycle simulation with stall detection ───
-    print("\n[2/7] Simulating one full trading cycle with stall detection...")
-    await detector.start()
-    
-    pipeline_times = {}
-    
-    # Step 1: Feature engineering
-    t0 = time.perf_counter()
-    feats = await asyncio.to_thread(add_features, mock_df.copy())
-    pipeline_times["add_features"] = round((time.perf_counter() - t0) * 1000, 2)
-    
-    # Step 2: Run all 3 brains in parallel threads
-    t0 = time.perf_counter()
-    decisions = list(await asyncio.gather(
-        asyncio.to_thread(transformer_brain.decide, snapshot) if transformer_brain._loaded else asyncio.to_thread(quant_brain.decide, snapshot),
-        asyncio.to_thread(quant_brain.decide, snapshot),
-        asyncio.to_thread(momentum_brain.decide, snapshot),
-    ))
-    pipeline_times["3_brains_parallel"] = round((time.perf_counter() - t0) * 1000, 2)
-    
-    # Step 3: Committee
-    t0 = time.perf_counter()
-    committee_result = run_committee(snapshot, decisions)
-    pipeline_times["committee"] = round((time.perf_counter() - t0) * 1000, 2)
-    
-    # Step 4: Sentinel
-    t0 = time.perf_counter()
-    sentinel_report = sentinel.check(snapshot, committee_result)
-    pipeline_times["sentinel"] = round((time.perf_counter() - t0) * 1000, 2)
-    
-    # Step 5: Position sizing
-    t0 = time.perf_counter()
-    trade_value = calculate_trade_size(10000.0, committee_result.confidence, sentinel_report.cap_pct)
-    pipeline_times["position_sizing"] = round((time.perf_counter() - t0) * 1000, 2)
-    
-    await detector.stop()
-    
-    print("  Pipeline timing:")
-    for step, t in pipeline_times.items():
-        print(f"    {step}: {t:.2f}ms")
-    
-    total_compute = sum(pipeline_times.values())
-    print(f"  Total compute (parallel brains): {total_compute:.2f}ms")
-    
-    stall_report = detector.report()
-    print(f"\n  Event loop stalls: {stall_report['stall_count']} stalls, "
-          f"max {stall_report['max_stall_ms']:.1f}ms, avg {stall_report['avg_stall_ms']:.1f}ms")
-    
-    # ─── 3. Compare committee logging overhead ───
-    print("\n[3/7] Committee logging overhead analysis...")
-    print("  (run_committee with INFO logging vs suppressed)")
-    
-    # Temporarily enable INFO logging
-    from committee import logger as committee_logger
-    original_level = committee_logger.level
-    committee_logger.setLevel(logging.INFO)
-    
-    committee_with_logging = await benchmark_async(
-        lambda: run_committee(snapshot, mock_decisions),
-        iterations=50, warmup=5
-    )
-    
-    # Restore
-    committee_logger.setLevel(original_level)
-    
-    print(f"  With INFO logging: {committee_with_logging['mean_ms']:.2f}ms mean, {committee_with_logging['max_ms']:.2f}ms max")
-    print(f"  Without logging:   {committee_silent['mean_ms']:.2f}ms mean, {committee_silent['max_ms']:.2f}ms max")
-    print(f"  Logging overhead:  {committee_with_logging['mean_ms'] - committee_silent['mean_ms']:.2f}ms mean")
-    
-    results["committee_with_logging"] = committee_with_logging
-    results["committee_overhead"] = {
-        "mean_ms": committee_with_logging['mean_ms'] - committee_silent['mean_ms'],
-        "max_ms": committee_with_logging['max_ms'] - committee_silent['max_ms'],
-    }
-    
-    # ─── 4. API call comparison ───
-    print("\n[4/7] Alpaca API call latencies (live)...")
-    api_results = {}
-    
-    try:
-        t0 = time.perf_counter()
-        equity, bp = await get_account_state()
-        api_results["get_account_state"] = round((time.perf_counter() - t0) * 1000, 2)
-        print(f"    get_account_state: {api_results['get_account_state']:.1f}ms (equity={equity}, bp={bp})")
-    except Exception as e:
-        api_results["get_account_state"] = f"error: {e}"
-        print(f"    get_account_state: ERROR - {e}")
-    
-    try:
-        t0 = time.perf_counter()
-        positions = await get_all_positions()
-        api_results["get_all_positions"] = round((time.perf_counter() - t0) * 1000, 2)
-        print(f"    get_all_positions: {api_results['get_all_positions']:.1f}ms (positions={len(positions)})")
-    except Exception as e:
-        api_results["get_all_positions"] = f"error: {e}"
-        print(f"    get_all_positions: ERROR - {e}")
-    
-    results["api_calls"] = api_results
-    
-    # ─── 5. File I/O latencies ───
-    print("\n[5/7] File I/O latencies...")
-    
-    from config import STATE_FILE_PATH, HEARTBEAT_PATH
-    
-    # save_state
-    test_state = {
-        "entry_times": {"BTCUSD": datetime.now(timezone.utc).isoformat()},
-        "entry_prices": {"BTCUSD": 60000.0},
-        "peak_prices": {"BTCUSD": 61000.0},
-        "cooldowns": {"BTCUSD": time.time() + 900},
-    }
-    
-    async def test_save():
-        import json as _json, os as _os
-        data = test_state.copy()
-        pid = os.getpid()
-        ts = time.time_ns()
-        tmp_path = f"{STATE_FILE_PATH}.audit_{pid}_{ts}.tmp"
-        final_path = f"{STATE_FILE_PATH}.audit_{pid}"
-        def _write():
-            with open(tmp_path, "w") as f:
-                _json.dump(data, f, indent=2)
-            _os.replace(tmp_path, final_path)
-        await asyncio.to_thread(_write)
+    async def start(self):
+        self._running = True
+        self._task = asyncio.create_task(self._tick())
+
+    async def stop(self):
+        self._running = False
+        self._task.cancel()
         try:
-            _os.remove(final_path)
-        except:
+            await self._task
+        except asyncio.CancelledError:
             pass
+
+    async def _tick(self):
+        last = time.perf_counter()
+        while self._running:
+            await asyncio.sleep(self.interval_ms / 1000.0)
+            now = time.perf_counter()
+            delay_ms = (now - last - self.interval_ms / 1000.0) * 1000
+            self.delays.append(delay_ms)
+            if delay_ms > self.max_block:
+                self.max_block = delay_ms
+            if delay_ms > self.threshold_ms:
+                self.block_count += 1
+            last = now
+
+    def report(self):
+        if not self.delays:
+            return {"ticks": 0, "max_block_ms": 0.0, "blocks_above_5ms": 0, "avg_delay_ms": 0.0, "p95_delay_ms": 0.0}
+        return {
+            "ticks": len(self.delays),
+            "max_block_ms": round(self.max_block, 2),
+            "blocks_above_5ms": self.block_count,
+            "avg_delay_ms": round(sum(self.delays) / len(self.delays), 2),
+            "p95_delay_ms": round(sorted(self.delays)[int(len(self.delays) * 0.95)], 2),
+        }
+
+
+async def simulate_full_cycle(tracker):
+    """Simulate one full trading cycle: per-symbol processing for all symbols."""
+    SYMBOLS = ["BTC/USD", "ETH/USD", "SOL/USD"]
+    equity = 5000.0
+    buying_power = 18000.0
+
+    # Per symbol: OHLCV -> features -> indicators -> regime -> committee -> sentinel
+    for symbol in SYMBOLS:
+        df = make_synthetic_df(80)
+        
+        # These run SYNC in the main event loop:
+        feats = add_features(df.copy())
+        ind = compute_indicators(df)
+        regime = classify_regime(df, ind)
+        
+        snapshot = MarketSnapshot(
+            symbol=symbol,
+            candles=[],
+            indicators=ind,
+            regime=regime,
+            atr_pct=ind["atr_pct"],
+            has_position=False,
+            position_size=0.0,
+            entry_price=None,
+            equity=equity,
+            buying_power=buying_power,
+        )
+        snapshot.candles_df = df
+
+        # Brains run via asyncio.to_thread (as main.py does):
+        decisions = list(await asyncio.gather(
+            asyncio.to_thread(transformer_brain.decide, snapshot),
+            asyncio.to_thread(quant_brain.decide, snapshot),
+            asyncio.to_thread(momentum_brain.decide, snapshot),
+        ))
+        committee = run_committee(snapshot, decisions)
+        sentinel_report = sentinel.check(snapshot, committee)
+        
+        if committee.action == "BUY" and not sentinel_report.veto:
+            trade_value = calculate_trade_size(equity, committee.confidence, sentinel_report.cap_pct)
+
+    return None
+
+
+async def simulate_full_cycle_sync_inference(tracker):
+    """Same as above but with transformer_brain.call() called directly (no to_thread)."""
+    SYMBOLS = ["BTC/USD", "ETH/USD", "SOL/USD"]
+    equity = 5000.0
+    buying_power = 18000.0
+
+    for symbol in SYMBOLS:
+        df = make_synthetic_df(80)
+        
+        # These run SYNC in the main event loop:
+        feats = add_features(df.copy())
+        ind = compute_indicators(df)
+        regime = classify_regime(df, ind)
+        
+        snapshot = MarketSnapshot(
+            symbol=symbol,
+            candles=[],
+            indicators=ind,
+            regime=regime,
+            atr_pct=ind["atr_pct"],
+            has_position=False,
+            position_size=0.0,
+            entry_price=None,
+            equity=equity,
+            buying_power=buying_power,
+        )
+        snapshot.candles_df = df
+
+        # Brains called DIRECTLY (not via to_thread) — simulates the old blocking pattern:
+        decisions = [
+            transformer_brain.decide(snapshot),
+            quant_brain.decide(snapshot),
+            momentum_brain.decide(snapshot),
+        ]
+        committee = run_committee(snapshot, decisions)
+        sentinel_report = sentinel.check(snapshot, committee)
+
+    return None
+
+
+async def main():
+    print("=" * 72)
+    print("FULL-CYCLE PERFORMANCE AUDIT")
+    print(f"PyTorch available: ", end="")
+    try:
+        import torch
+        print(f"YES (v{torch.__version__})")
+        print(f"torch num_threads: {torch.get_num_threads()}")
+        print(f"torch num_interop_threads: {torch.get_num_interop_threads()}")
+    except ImportError:
+        print("NO")
+
+    print(f"BLOCK_THRESHOLD_MS = 5.0")
+    print(f"Ticker interval: 10ms (high-resolution for blocking detection)")
+    print("=" * 72)
+
+    # ── Test 1: Full cycle with to_thread (current main.py pattern) ──────
+    print("\n--- Test 1: Full cycle with asyncio.to_thread (current pattern) ---")
+    tracker1 = BlockerTracker(interval_ms=10, threshold_ms=5.0)
+    await tracker1.start()
+    t0 = time.perf_counter()
+    await simulate_full_cycle(tracker1)
+    t1 = time.perf_counter()
+    await tracker1.stop()
+    r1 = tracker1.report()
+    print(f"  Total cycle time: {(t1-t0)*1000:.1f}ms")
+    print(f"  Ticks: {r1['ticks']}")
+    print(f"  Max single block: {r1['max_block_ms']:.1f}ms")
+    print(f"  Blocks > 5ms: {r1['blocks_above_5ms']}")
+    print(f"  Avg delay: {r1['avg_delay_ms']:.1f}ms")
+    print(f"  P95 delay: {r1['p95_delay_ms']:.1f}ms")
+
+    # ── Test 2: Full cycle with synchronous inference (old pattern) ─────
+    if transformer_brain._loaded:
+        print("\n--- Test 2: Full cycle with sync inference (worst-case blocking) ---")
+        tracker2 = BlockerTracker(interval_ms=10, threshold_ms=5.0)
+        await tracker2.start()
+        t0 = time.perf_counter()
+        await simulate_full_cycle_sync_inference(tracker2)
+        t1 = time.perf_counter()
+        await tracker2.stop()
+        r2 = tracker2.report()
+        print(f"  Total cycle time: {(t1-t0)*1000:.1f}ms")
+        print(f"  Ticks: {r2['ticks']}")
+        print(f"  Max single block: {r2['max_block_ms']:.1f}ms")
+        print(f"  Blocks > 5ms: {r2['blocks_above_5ms']}")
+        print(f"  Avg delay: {r2['avg_delay_ms']:.1f}ms")
+        print(f"  P95 delay: {r2['p95_delay_ms']:.1f}ms")
+
+    # ── Test 3: Per-call breakdown ───────────────────────────────────────
+    print("\n--- Per-component breakdown (avg over 20 iterations) ---")
     
-    save_result = await benchmark_async(test_save, iterations=20, warmup=3)
-    results["save_state"] = save_result
-    print(f"    save_state: {save_result['mean_ms']:.2f}ms mean, {save_result['max_ms']:.2f}ms max")
+    df = make_synthetic_df(80)
+    ind = compute_indicators(df)
     
-    # write_heartbeat
-    from portfolio import write_heartbeat
-    hb_result = await benchmark_async(write_heartbeat, iterations=20, warmup=3)
-    results["write_heartbeat"] = hb_result
-    print(f"    write_heartbeat: {hb_result['mean_ms']:.2f}ms mean, {hb_result['max_ms']:.2f}ms max (median={hb_result['median_ms']:.2f}ms)")
+    # feature_engineering (add_features)
+    times = []
+    for _ in range(20):
+        t0 = time.perf_counter()
+        add_features(df.copy())
+        t1 = time.perf_counter()
+        times.append(t1 - t0)
+    print(f"  add_features:              {sum(times)/len(times)*1000:.1f}ms/call (SYNC)")
     
-    # ─── 6. Memory check ───
-    print("\n[6/7] Memory / unbounded growth check...")
-    import gc
-    gc.collect()
+    # compute_indicators
+    times = []
+    for _ in range(20):
+        t0 = time.perf_counter()
+        compute_indicators(df)
+        t1 = time.perf_counter()
+        times.append(t1 - t0)
+    print(f"  compute_indicators:        {sum(times)/len(times)*1000:.1f}ms/call (SYNC)")
     
-    from main import entry_times, entry_prices, peak_prices, cooldowns
-    from notifications import _session
-    from database import _pool
+    # transformer_brain.decide (sync)
+    if transformer_brain._loaded:
+        snapshot = MarketSnapshot(
+            symbol="BTC/USD", candles=[], indicators=ind, regime="UPTREND",
+            atr_pct=ind["atr_pct"], has_position=False, position_size=0.0,
+            entry_price=None, equity=5000.0, buying_power=18000.0,
+        )
+        snapshot.candles_df = df
+        times = []
+        for _ in range(20):
+            t0 = time.perf_counter()
+            transformer_brain.decide(snapshot)
+            t1 = time.perf_counter()
+            times.append(t1 - t0)
+        print(f"  transformer_brain.decide:  {sum(times)/len(times)*1000:.1f}ms/call (via to_thread)")
+        
+        # threaded version
+        times_threaded = []
+        for _ in range(20):
+            t0 = time.perf_counter()
+            await asyncio.to_thread(transformer_brain.decide, snapshot)
+            t1 = time.perf_counter()
+            times_threaded.append(t1 - t0)
+        print(f"  transformer (to_thread):   {sum(times_threaded)/len(times_threaded)*1000:.1f}ms/call (incl thread overhead)")
     
-    print(f"  entry_times: {len(entry_times)} entries")
-    print(f"  entry_prices: {len(entry_prices)} entries")
-    print(f"  peak_prices: {len(peak_prices)} entries")
-    print(f"  cooldowns: {len(cooldowns)} entries")
-    print(f"  sentinel._consecutive_losses: {len(sentinel._consecutive_losses)} entries")
-    print(f"  momentum_brain._prev_regime: {len(momentum_brain._prev_regime)} entries")
-    print(f"  notifications._session: {'open' if _session and not _session.closed else 'closed/None'}")
-    print(f"  database._pool: {'initialized' if _pool else 'None'}")
+    # quant_brain
+    times = []
+    for _ in range(20):
+        t0 = time.perf_counter()
+        quant_brain.decide(snapshot)
+        t1 = time.perf_counter()
+        times.append(t1 - t0)
+    print(f"  quant_brain.decide:        {sum(times)/len(times)*1000:.1f}ms/call (via to_thread)")
     
-    # ─── 7. Summary ───
-    print("\n[7/7] SUMMARY")
-    print("=" * 70)
+    # momentum_brain
+    times = []
+    for _ in range(20):
+        t0 = time.perf_counter()
+        momentum_brain.decide(snapshot)
+        t1 = time.perf_counter()
+        times.append(t1 - t0)
+    print(f"  momentum_brain.decide:     {sum(times)/len(times)*1000:.1f}ms/call (via to_thread)")
     
-    print("\nCRITICAL (>100ms):")
-    for name in ["add_features_silent", "transformer_silent"]:
-        if name in results and isinstance(results[name], dict) and "mean_ms" in results[name]:
-            r = results[name]
-            if r["mean_ms"] > 100:
-                print(f"  {name}: {r['mean_ms']:.1f}ms mean, {r['max_ms']:.1f}ms max")
+    # run_committee
+    decisions = [
+        AIDecision(brain="transformer", action="BUY", confidence=0.75, regime="UPTREND", reason="test"),
+        AIDecision(brain="quant", action="BUY", confidence=0.65, regime="UPTREND", reason="test"),
+        AIDecision(brain="momentum", action="HOLD", confidence=0.50, regime="UPTREND", reason="test"),
+    ]
+    times = []
+    for _ in range(20):
+        t0 = time.perf_counter()
+        run_committee(snapshot, decisions)
+        t1 = time.perf_counter()
+        times.append(t1 - t0)
+    print(f"  run_committee:             {sum(times)/len(times)*1000:.1f}ms/call (SYNC)")
     
-    print("\nHIGH (10-100ms):")
-    for name in ["committee_silent", "committee_with_logging", "quant_brain", "momentum_brain", "sentinel_silent"]:
-        if name in results and isinstance(results[name], dict) and "mean_ms" in results[name]:
-            r = results[name]
-            if 10 <= r["mean_ms"] <= 100:
-                print(f"  {name}: {r['mean_ms']:.1f}ms mean, {r['max_ms']:.1f}ms max")
-            elif r["mean_ms"] > 100:
-                print(f"  {name}: {r['mean_ms']:.1f}ms mean, {r['max_ms']:.1f}ms max")
+    # sentinel.check
+    committee = run_committee(snapshot, decisions)
+    times = []
+    for _ in range(20):
+        t0 = time.perf_counter()
+        sentinel.check(snapshot, committee)
+        t1 = time.perf_counter()
+        times.append(t1 - t0)
+    print(f"  sentinel.check:            {sum(times)/len(times)*1000:.1f}ms/call (SYNC)")
     
-    print("\nMEDIUM (1-10ms):")
-    for name in ["save_state", "write_heartbeat"]:
-        if name in results and isinstance(results[name], dict) and "mean_ms" in results[name]:
-            r = results[name]
-            if 1 < r["mean_ms"] <= 10:
-                print(f"  {name}: {r['mean_ms']:.1f}ms mean, {r['max_ms']:.1f}ms max")
+    # calculate_trade_size
+    times = []
+    for _ in range(20):
+        t0 = time.perf_counter()
+        calculate_trade_size(5000.0, 0.75, 1.0)
+        t1 = time.perf_counter()
+        times.append(t1 - t0)
+    print(f"  calculate_trade_size:      {sum(times)/len(times)*1000:.1f}ms/call (SYNC)")
+
+    # State save
+    from main import save_state, entry_times, entry_prices, peak_prices, cooldowns
+    entry_times["test"] = time.time()
+    entry_prices["test"] = 62000.0
+    peak_prices["test"] = 62000.0
+    cooldowns["test"] = time.time() + 900
+    times = []
+    for _ in range(10):
+        t0 = time.perf_counter()
+        await save_state()
+        t1 = time.perf_counter()
+        times.append(t1 - t0)
+    print(f"  save_state (to_thread):    {sum(times)/len(times)*1000:.1f}ms/call (to_thread)")
     
-    print("\nLOW (<1ms):")
-    for name in ["quant_silent", "momentum_silent", "sentinel_silent"]:
-        if name in results and isinstance(results[name], dict) and "mean_ms" in results[name]:
-            r = results[name]
-            if r["mean_ms"] < 1:
-                print(f"  {name}: {r['mean_ms']:.3f}ms mean")
-    
-    print("\nPipeline timing (single symbol cycle):")
-    for step, t in pipeline_times.items():
-        print(f"  {step}: {t:.2f}ms")
-    
-    print(f"\nTotal stall time during pipeline: {stall_report['total_stall_ms']:.1f}ms "
-          f"({stall_report['stall_count']} stalls, max={stall_report['max_stall_ms']:.1f}ms)")
-    
-    # Save results
-    with open("perf_audit_v2_results.json", "w") as f:
-        json.dump({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "results": results,
-            "pipeline_times": pipeline_times,
-            "stall_report": stall_report,
-        }, f, indent=2)
-    print(f"\nResults saved to perf_audit_v2_results.json")
+    print("\n" + "=" * 72)
+    print("DONE")
+    print("=" * 72)
 
 
 if __name__ == "__main__":
-    asyncio.run(run_full_audit())
+    from models import AIDecision
+    asyncio.run(main())
