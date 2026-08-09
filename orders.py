@@ -3,10 +3,11 @@ import asyncio
 import math
 from decimal import Decimal, ROUND_DOWN
 
-from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest, GetOrdersRequest
+from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+from datetime import datetime, timezone
 
-from config import logger, trading_client, BOT_NAME, FEE_RATE, SELL_SLIPPAGE_BUFFER
+from config import logger, trading_client, BOT_NAME, FEE_RATE, SELL_SLIPPAGE_BUFFER, BUY_SLIPPAGE_BUFFER
 from database import record_trade
 
 
@@ -38,7 +39,7 @@ async def place_order(
     """
     try:
         if side == OrderSide.BUY:
-            raw_limit   = price * (1.0 + SELL_SLIPPAGE_BUFFER) if price else None
+            raw_limit   = price * (1.0 + BUY_SLIPPAGE_BUFFER) if price else None
             limit_price = _sanitize_price(raw_limit) if raw_limit else None
             order_data  = LimitOrderRequest(
                 symbol=symbol, qty=qty, side=side,
@@ -79,3 +80,45 @@ async def place_order(
     except Exception as e:
         logger.error(f"Order failed ({side.value} {symbol}): {e}")
         return None
+
+
+async def get_stale_open_orders(symbol: str, max_age_seconds: int) -> list:
+    """
+    Queries open orders for a specific symbol that are older than max_age_seconds.
+    This is a read-only operation and does not perform cancellations.
+    """
+    try:
+        filter_params = GetOrdersRequest(
+            status=QueryOrderStatus.OPEN,
+            symbols=[symbol]
+        )
+
+        orders = await asyncio.to_thread(trading_client.get_orders, filter=filter_params)
+        
+        now = datetime.now(timezone.utc)
+        stale_orders = []
+        for order in orders:
+            # Calculate order age in seconds
+            age = (now - order.created_at).total_seconds()
+            if age > max_age_seconds:
+                stale_orders.append(order)
+                
+        return stale_orders
+    except Exception as e:
+        logger.error(f"Failed to fetch stale open orders for {symbol}: {e}")
+        return []
+
+
+async def cancel_stale_order(order_id: str) -> bool:
+    """
+    Cancels a single order by its ID.
+    Returns True if the cancellation succeeded, False otherwise.
+    """
+    try:
+        await asyncio.to_thread(trading_client.cancel_order_by_id, order_id)
+        logger.info(f"Successfully requested cancellation for order {order_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to cancel order {order_id}: {e}")
+        return False
+

@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     # Fee and slippage
     fee_rate: float = 0.001  # 0.1% per side (Alpaca crypto default)
     sell_slippage_buffer: float = 0.002  # 0.2% slippage buffer for SELL limit orders
+    buy_slippage_buffer: float = 0.003  # 0.3% slippage buffer for BUY limit orders (suggested starting point; may need tuning based on actual fill-rate data)
     
     sentinel_max_atr_pct: float = 6.0
     sentinel_max_vol_mult: float = 4.0
@@ -110,6 +111,7 @@ STATE_FILE_PATH    = settings.state_file_path
 SLEEP_PER_LOOP = settings.sleep_per_loop
 FEE_RATE           = settings.fee_rate
 SELL_SLIPPAGE_BUFFER = settings.sell_slippage_buffer
+BUY_SLIPPAGE_BUFFER = settings.buy_slippage_buffer
 
 def _resolve_path(path_val: str, default_name: str) -> str:
     if os.path.exists(path_val):
