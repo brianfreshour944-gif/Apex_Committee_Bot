@@ -40,7 +40,7 @@ from brains.momentum import momentum_brain
 from committee import run_committee
 from sentinel import sentinel
 from position_sizing import calculate_trade_size
-from orders import place_order
+from orders import place_order, cancel_stale_orders
 from portfolio import normalize_symbol, close_position, close_all_positions, write_heartbeat
 from database import init_db, report_equity, record_realized_pnl
 from notifications import send_discord_alert
@@ -135,6 +135,11 @@ async def run():
         cycle_start = time.time()
         try:
             await write_heartbeat()
+
+            # ── Cancel stale orders from previous cycle ──────────────────────
+            # Prevents accumulation of unfilled limit orders that tie up buying
+            # power and cause the bot to sit idle with pending orders.
+            await cancel_stale_orders()
 
             # ── Account state ──────────────────────────────────────────────
             equity, buying_power, cash = await get_account_state()

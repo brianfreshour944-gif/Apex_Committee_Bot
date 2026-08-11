@@ -10,6 +10,44 @@ from config import logger, trading_client, BOT_NAME, FEE_RATE, SELL_SLIPPAGE_BUF
 from database import record_trade
 
 
+def _normalize_symbol(symbol: str) -> str:
+    return symbol.replace("/", "")
+
+
+async def cancel_stale_orders(symbol: str | None = None):
+    """Cancel all open orders for a symbol (or all symbols if None).
+
+    Called at the start of each cycle to clean up unfilled limit orders
+    from previous cycles. This prevents order accumulation that ties up
+    buying power and causes the 'new' order pile-up.
+    """
+    try:
+        if symbol is not None:
+            alpaca_sym = _normalize_symbol(symbol)
+            orders = await asyncio.to_thread(
+                trading_client.get_orders,
+                status="open",
+                symbols=[alpaca_sym],
+            )
+        else:
+            orders = await asyncio.to_thread(
+                trading_client.get_orders, status="open"
+            )
+
+        cancelled = 0
+        for order in orders:
+            try:
+                await asyncio.to_thread(trading_client.cancel_order, order.id)
+                cancelled += 1
+            except Exception:
+                pass
+
+        if cancelled > 0:
+            logger.info(f"Cancelled {cancelled} stale open order(s)")
+    except Exception as e:
+        logger.warning(f"Order cancellation failed: {e}")
+
+
 def _sanitize_price(price: float) -> float:
     d = Decimal(str(price))
     if price >= 1.0:
@@ -38,7 +76,8 @@ async def place_order(
     """
     try:
         if side == OrderSide.BUY:
-            raw_limit   = price * (1.0 + SELL_SLIPPAGE_BUFFER) if price else None
+            # BUY limit price should be below market to ensure fill (not above)
+            raw_limit   = price * (1.0 - SELL_SLIPPAGE_BUFFER) if price else None
             limit_price = _sanitize_price(raw_limit) if raw_limit else None
             order_data  = LimitOrderRequest(
                 symbol=symbol, qty=qty, side=side,
