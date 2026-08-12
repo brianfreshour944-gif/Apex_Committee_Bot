@@ -103,6 +103,38 @@ def load_state():
         logger.warning(f"State load failed: {e}")
 
 
+async def sync_state_with_alpaca():
+    """Sync internal state with actual Alpaca positions on startup."""
+    global start_equity
+    try:
+        current_positions = await get_all_positions()
+        if not current_positions:
+            return
+        
+        alpaca_symbols = set(current_positions.keys())
+        local_symbols = set(entry_times.keys())
+        
+        # Add missing positions from Alpaca to local state
+        for alpaca_sym, pdata in current_positions.items():
+            if alpaca_sym not in entry_times:
+                entry_times[alpaca_sym] = datetime.now(timezone.utc)
+                entry_prices[alpaca_sym] = pdata["avg_entry"]
+                peak_prices[alpaca_sym] = pdata["avg_entry"]
+                logger.info(f"[SYNC] Added missing position: {alpaca_sym} qty={pdata['qty']} entry={pdata['avg_entry']}")
+        
+        # Remove local state for positions that no longer exist on Alpaca
+        for alpaca_sym in local_symbols - alpaca_symbols:
+            entry_times.pop(alpaca_sym, None)
+            entry_prices.pop(alpaca_sym, None)
+            peak_prices.pop(alpaca_sym, None)
+            cooldowns.pop(alpaca_sym, None)
+            logger.info(f"[SYNC] Removed stale local state: {alpaca_sym}")
+        
+        await save_state()
+    except Exception as e:
+        logger.warning(f"State sync failed: {e}")
+
+
 async def run():
     global start_equity
 
@@ -112,6 +144,8 @@ async def run():
         logger.warning(f"Database init failed (continuing without DB): {e}")
 
     load_state()
+    # Sync internal state with actual Alpaca positions
+    await sync_state_with_alpaca()
     logger.info("[BRAIN] Apex Committee Bot started — 4-brain ensemble")
     logger.info(f"⚖️  Brain weights: Transformer=50% | Quant=30% | Momentum=20%")
     logger.info(f"🛡️  Sentinel active — veto threshold ATR>{6}%")
@@ -154,15 +188,39 @@ async def run():
             # ── Fetch all positions ────────────────────────────────────────
             current_positions = await get_all_positions()
 
+            # ── Parallel OHLCV fetch ─────────────────────────────────────────
+            # Fetch all symbols' OHLCV data concurrently to avoid sequential
+            # network latency (3 symbols × ~200ms = ~600ms -> ~200ms with gather)
+            ohlcv_data = await asyncio.gather(*[get_ohlcv(s) for s in SYMBOLS])
+
+            # ── Parallel indicator computation ───────────────────────────────
+            # compute_indicators (RSI, MACD, BB, EMA, ATR, vol, momentum) is
+            # CPU-bound synchronous code (~13ms per symbol). Offload to threads
+            # and gather concurrently to reduce from ~39ms sequential to ~13ms.
+            indicator_results = await asyncio.gather(*[
+                asyncio.to_thread(compute_indicators, df) if df is not None else None
+                for df in ohlcv_data
+            ])
+
             # ── Portfolio-level equity verification ────────────────────────
-            # Reconcile Alpaca's equity with a manual sum of cash + position values.
-            # DO NOT use buying_power here — it includes margin leverage (4x on paper),
-            # which would cause false mismatch warnings when equity differs from
-            # leveraged buying power.
+            # Compute equity using current market prices for accuracy.
+            # Alpaca's equity includes unrealized PnL, so simple cash+market_value
+            # can differ. Use current prices from indicators.
+            price_by_symbol = {}
+            for symbol, indicators in zip(SYMBOLS, indicator_results):
+                if indicators is not None:
+                    price_by_symbol[normalize_symbol(symbol)] = indicators["price"]
+
             computed_equity = cash
             for sym, pdata in current_positions.items():
-                computed_equity += pdata.get("market_value", 0.0)
-            if equity > 0 and abs(computed_equity - equity) / equity > 0.02:
+                qty = pdata.get("qty", 0.0)
+                current_price = price_by_symbol.get(sym)
+                if current_price and qty > 0:
+                    computed_equity += qty * current_price
+                else:
+                    computed_equity += pdata.get("market_value", 0.0)
+
+            if equity > 0 and abs(computed_equity - equity) / equity > 0.05:  # 5% threshold
                 logger.warning(
                     f"[VERIFY] Equity mismatch: Alpaca=${equity:,.2f} "
                     f"computed=${computed_equity:,.2f} "

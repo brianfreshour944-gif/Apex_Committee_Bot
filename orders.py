@@ -22,18 +22,15 @@ async def cancel_stale_orders(symbol: str | None = None):
     buying power and causes the 'new' order pile-up.
     """
     try:
+        # Alpaca SDK get_orders() doesn't accept status parameter; filter manually
         if symbol is not None:
             alpaca_sym = _normalize_symbol(symbol)
-            orders = await asyncio.to_thread(
-                trading_client.get_orders,
-                status="open",
-                symbols=[alpaca_sym],
-            )
+            all_orders = await asyncio.to_thread(trading_client.get_orders)
+            orders = [o for o in all_orders if o.symbol == alpaca_sym and o.status in ("new", "partially_filled", "accepted", "pending_new")]
         else:
-            orders = await asyncio.to_thread(
-                trading_client.get_orders, status="open"
-            )
-
+            all_orders = await asyncio.to_thread(trading_client.get_orders)
+            orders = [o for o in all_orders if o.status in ("new", "partially_filled", "accepted", "pending_new")]
+        
         cancelled = 0
         for order in orders:
             try:
@@ -41,7 +38,7 @@ async def cancel_stale_orders(symbol: str | None = None):
                 cancelled += 1
             except Exception:
                 pass
-
+        
         if cancelled > 0:
             logger.info(f"Cancelled {cancelled} stale open order(s)")
     except Exception as e:
