@@ -97,22 +97,39 @@ async def place_order(
 
         # Extract actual fill information
         fill_price = float(order.filled_avg_price) if order.filled_avg_price else None
-        filled_qty = float(order.filled_qty) if order.filled_qty else qty
-        fee = (filled_qty * (fill_price or price or 0)) * FEE_RATE if fill_price else (qty * (price or 0)) * FEE_RATE
+        filled_qty = float(order.filled_qty) if order.filled_qty else 0.0
+        
+        # If order not filled yet (limit order), wait briefly and check fill status
+        if filled_qty == 0.0 and fill_price is None:
+            # Poll for fill status (limit order may fill asynchronously)
+            for _ in range(5):  # up to 5 seconds
+                await asyncio.sleep(1)
+                order = await asyncio.to_thread(trading_client.get_order_by_id, order.id)
+                if order.filled_qty and float(order.filled_qty) > 0:
+                    fill_price = float(order.filled_avg_price)
+                    filled_qty = float(order.filled_qty)
+                    break
+        
+        # If still no fill, return failure (caller will handle)
+        if filled_qty == 0.0:
+            logger.warning(f"Order {order.id} not filled after wait")
+            return None
+        
+        fee = (filled_qty * fill_price) * FEE_RATE
 
         # Record with actual fill price and fee
-        trade_price = fill_price if fill_price else price
-        await asyncio.to_thread(record_trade, BOT_NAME, symbol, side.value, qty,
-                                price, fill_price=trade_price, fee=fee,
+        await asyncio.to_thread(record_trade, BOT_NAME, symbol, side.value, filled_qty,
+                                fill_price, fill_price=fill_price, fee=fee,
                                 order_id=order.id)
-        logger.info(f"{'BUY' if side == OrderSide.BUY else 'SELL'} {symbol} qty={filled_qty:.6f} @ ${trade_price:.4f} | fee=${fee:.2f}")
+        logger.info(f"{'BUY' if side == OrderSide.BUY else 'SELL'} {symbol} qty={filled_qty:.6f} @ ${fill_price:.4f} | fee=${fee:.2f}")
 
         return {
             "success": True,
             "qty": filled_qty,
-            "fill_price": trade_price,
+            "fill_price": fill_price,
             "fee": fee,
             "order_id": order.id,
+            "trade_value": filled_qty * fill_price,  # actual dollar value filled
         }
 
     except Exception as e:

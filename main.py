@@ -316,6 +316,8 @@ async def run():
                                     sentinel.register_loss(symbol)
                                 else:
                                     sentinel.register_win(symbol)
+                                # Sync buying_power from Alpaca after SELL
+                                _, buying_power, _ = await get_account_state()
                                 # Atomic cleanup of state under lock
                                 async with lock:
                                     entry_times.pop(alpaca_sym, None)
@@ -414,6 +416,10 @@ async def run():
                     success_result = await place_order(symbol, OrderSide.BUY, qty, price)
                     if success_result and success_result.get("success"):
                         fill_price = success_result.get("fill_price") or price
+                        filled_qty = success_result.get("qty", qty)
+                        filled_value = success_result.get("trade_value", filled_qty * fill_price)
+                        # Sync buying_power from Alpaca to stay accurate
+                        _, buying_power, _ = await get_account_state()
                         # Atomic update of all shared state under lock
                         lock = get_state_lock()
                         async with lock:
@@ -421,7 +427,6 @@ async def run():
                             entry_prices[alpaca_sym] = fill_price
                             peak_prices[alpaca_sym]  = fill_price
                             cooldowns[alpaca_sym]    = now + COOLDOWN_SECONDS_BUY
-                            buying_power            -= trade_value
                         await save_state()
 
                         # Format vote breakdown for Discord
@@ -436,7 +441,7 @@ async def run():
                                     f"**Price:** ${price:.4f}\n"
                                     f"**Fill price:** ${fill_price:.4f}\n"
                                     f"**Fee:** ${success_result.get('fee', 0):.2f}\n"
-                                    f"**Size:** ${trade_value:.2f}\n"
+                                    f"**Size:** ${filled_value:.2f}\n"
                                     f"**Committee score:** {committee.confidence:.3f}\n"
                                     f"**Regime:** {committee.regime}\n"
                                     f"**Sentinel:** {sentinel_report.reason}\n\n"
@@ -446,6 +451,8 @@ async def run():
                             )
                         except Exception:
                             pass
+                    else:
+                        logger.warning(f"BUY {symbol} order failed or unfilled")
 
                 except Exception as symbol_err:
                     logger.error(f"[!]️ Error processing {symbol}: {symbol_err}")

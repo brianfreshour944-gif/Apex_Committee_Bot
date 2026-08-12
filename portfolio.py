@@ -28,6 +28,7 @@ async def close_position(symbol: str, pos_data: dict | None = None,
         - qty: float (quantity closed)
         - fee: float (estimated fee)
         - order_id: str
+        - trade_value: float (actual dollar value filled)
     Returns None on failure.
     """
     try:
@@ -67,16 +68,35 @@ async def close_position(symbol: str, pos_data: dict | None = None,
 
         order = await asyncio.to_thread(trading_client.submit_order, order_data=order_data)
 
-        fill_price = float(order.filled_avg_price) if order.filled_avg_price else avg_entry
-        fee = (qty * fill_price) * FEE_RATE
+        # Poll for fill status (limit order may fill asynchronously)
+        fill_price = None
+        filled_qty = 0.0
+        for _ in range(10):  # up to 10 seconds
+            await asyncio.sleep(1)
+            order = await asyncio.to_thread(trading_client.get_order_by_id, order.id)
+            if order.filled_qty and float(order.filled_qty) > 0:
+                fill_price = float(order.filled_avg_price) if order.filled_avg_price else avg_entry
+                filled_qty = float(order.filled_qty)
+                break
+        
+        if filled_qty == 0.0:
+            logger.warning(f"SELL {symbol} not filled after wait, cancelling")
+            try:
+                await asyncio.to_thread(trading_client.cancel_order, order.id)
+            except Exception:
+                pass
+            return None
 
-        logger.info(f"Closed: {symbol} qty={qty} @ ${fill_price:.4f} | fee=${fee:.2f}")
+        fee = (filled_qty * fill_price) * FEE_RATE
+
+        logger.info(f"Closed: {symbol} qty={filled_qty:.6f} @ ${fill_price:.4f} | fee=${fee:.2f}")
 
         return {
             "fill_price": fill_price,
-            "qty": qty,
+            "qty": filled_qty,
             "fee": fee,
             "order_id": order.id,
+            "trade_value": filled_qty * fill_price,
         }
     except Exception as e:
         logger.error(f"Close failed {symbol}: {e}")
