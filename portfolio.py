@@ -2,7 +2,20 @@
 import asyncio
 import os
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_DOWN
 from config import logger, trading_client, HEARTBEAT_PATH, FEE_RATE, SELL_SLIPPAGE_BUFFER
+
+
+def _sanitize_price(price: float) -> float:
+    d = Decimal(str(price))
+    if price >= 1.0:
+        return float(d.quantize(Decimal('0.01'), rounding=ROUND_DOWN))
+    elif price >= 0.01:
+        return float(d.quantize(Decimal('0.0001'), rounding=ROUND_DOWN))
+    elif price >= 0.0001:
+        return float(d.quantize(Decimal('0.000001'), rounding=ROUND_DOWN))
+    else:
+        return float(d.quantize(Decimal('0.00000001'), rounding=ROUND_DOWN))
 
 
 def normalize_symbol(symbol: str) -> str:
@@ -57,7 +70,7 @@ async def close_position(symbol: str, pos_data: dict | None = None,
         from alpaca.trading.requests import LimitOrderRequest
         from alpaca.trading.enums import OrderSide, TimeInForce
 
-        limit_price = current_price * (1.0 - SELL_SLIPPAGE_BUFFER) if current_price else avg_entry
+        limit_price = _sanitize_price(current_price * (1.0 - SELL_SLIPPAGE_BUFFER)) if current_price else avg_entry
         order_data = LimitOrderRequest(
             symbol=symbol,
             qty=qty,
