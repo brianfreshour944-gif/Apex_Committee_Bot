@@ -38,7 +38,7 @@ async def close_position(symbol: str, pos_data: dict | None = None,
             positions = await asyncio.to_thread(trading_client.get_all_positions)
             pos = None
             for p in positions:
-                if p.symbol == alpaca_sym:
+                if p.symbol == alpaca_sym or p.symbol == symbol:
                     pos = p
                     break
             if pos is None:
@@ -59,11 +59,11 @@ async def close_position(symbol: str, pos_data: dict | None = None,
 
         limit_price = current_price * (1.0 - SELL_SLIPPAGE_BUFFER) if current_price else avg_entry
         order_data = LimitOrderRequest(
-            symbol=alpaca_sym,
+            symbol=symbol,
             qty=qty,
             limit_price=limit_price,
             side=OrderSide.SELL,
-            time_in_force=TimeInForce.DAY,
+            time_in_force=TimeInForce.GTC,
         )
 
         order = await asyncio.to_thread(trading_client.submit_order, order_data=order_data)
