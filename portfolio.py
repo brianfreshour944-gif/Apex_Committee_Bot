@@ -1,5 +1,6 @@
 
 import asyncio
+import math
 import os
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
@@ -47,21 +48,24 @@ async def close_position(symbol: str, pos_data: dict | None = None,
     try:
         alpaca_sym = normalize_symbol(symbol)
 
-        if pos_data is None:
-            positions = await asyncio.to_thread(trading_client.get_all_positions)
-            pos = None
-            for p in positions:
-                if p.symbol == alpaca_sym or p.symbol == symbol:
-                    pos = p
-                    break
-            if pos is None:
-                logger.warning(f"Cannot close {symbol}: position not found")
-                return None
-            qty = float(pos.qty)
-            avg_entry = float(pos.avg_entry_price)
-        else:
-            qty = pos_data.get("qty", 0.0)
-            avg_entry = pos_data.get("avg_entry", 0.0)
+        # Always re-fetch the latest position to avoid stale qty
+        # from the cached current_positions in main.py (transformer
+        # brain runs ~500ms, during which positions may change).
+        positions = await asyncio.to_thread(trading_client.get_all_positions)
+        pos = None
+        for p in positions:
+            if p.symbol == alpaca_sym or p.symbol == symbol:
+                pos = p
+                break
+
+        if pos is None:
+            logger.warning(f"Close failed {symbol}: position no longer exists")
+            return None
+
+        qty = float(pos.qty)
+        avg_entry = float(pos.avg_entry_price)
+
+        qty = math.floor(qty * 1e8) / 1e8
 
         if qty <= 0:
             logger.warning(f"Cannot close {symbol}: qty={qty}")
