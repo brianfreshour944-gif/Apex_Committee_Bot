@@ -24,21 +24,30 @@ def normalize_symbol(symbol: str) -> str:
 
 
 async def _cancel_orders_for_symbol(symbol: str):
-    """Cancel all open orders for a specific symbol to free up the position."""
-    try:
-        alpaca_sym = normalize_symbol(symbol)
-        all_orders = await asyncio.to_thread(trading_client.get_orders)
-        for order in all_orders:
-            if order.status in ("new", "partially_filled", "accepted", "pending_new"):
-                if order.symbol == symbol or order.symbol == alpaca_sym:
-                    try:
-                        await asyncio.to_thread(trading_client.cancel_order, order.id)
-                    except Exception:
-                        pass
-        # Give Alpaca a moment to propagate cancellations
-        await asyncio.sleep(0.5)
-    except Exception as e:
-        logger.warning(f"Cancel orders for {symbol} failed: {e}")
+    """Cancel all open orders for a specific symbol to free up the position.
+
+    Retries with increasing delays to handle Alpaca's eventual consistency.
+    """
+    alpaca_sym = normalize_symbol(symbol)
+    for attempt in range(3):
+        try:
+            all_orders = await asyncio.to_thread(trading_client.get_orders)
+            cancelled = 0
+            for order in all_orders:
+                if order.status in ("new", "partially_filled", "accepted", "pending_new"):
+                    if order.symbol == symbol or order.symbol == alpaca_sym:
+                        try:
+                            await asyncio.to_thread(trading_client.cancel_order, order.id)
+                            cancelled += 1
+                        except Exception:
+                            pass
+            if cancelled > 0:
+                logger.info(f"Cancelled {cancelled} stale order(s) for {symbol} (attempt {attempt+1})")
+            # Exponential backoff: 1s, 2s, 4s
+            await asyncio.sleep(1.0 * (2 ** attempt))
+        except Exception as e:
+            logger.warning(f"Cancel orders for {symbol} attempt {attempt+1} failed: {e}")
+            await asyncio.sleep(1.0 * (2 ** attempt))
 
 
 def _get_pos_qty_available(pos) -> tuple[float, float]:
@@ -210,7 +219,18 @@ async def close_position(symbol: str, pos_data: dict | None = None,
             if is_insufficient:
                 # insufficient balance: cancel stale orders, wait, retry
                 await _cancel_orders_for_symbol(symbol)
-                await asyncio.sleep(2 * (attempt + 1))
+                # Wait for qty_available to match qty (cancellations propagated)
+                for _ in range(6):  # up to 6s
+                    await asyncio.sleep(1.0)
+                    positions = await asyncio.to_thread(trading_client.get_all_positions)
+                    for p in positions:
+                        if p.symbol == alpaca_sym or p.symbol == symbol:
+                            _, q = _get_pos_qty_available(p)
+                            if q >= float(p.qty) * 0.999:
+                                break
+                    else:
+                        continue
+                    break
                 continue
             else:
                 # Non-retryable error - try market order fallback
