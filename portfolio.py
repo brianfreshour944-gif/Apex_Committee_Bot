@@ -37,7 +37,7 @@ async def _cancel_orders_for_symbol(symbol: str):
                 if order.status in ("new", "partially_filled", "accepted", "pending_new"):
                     if order.symbol == symbol or order.symbol == alpaca_sym:
                         try:
-                            await asyncio.to_thread(trading_client.cancel_order, order.id)
+                            await asyncio.to_thread(trading_client.cancel_order_by_id, order.id)
                             cancelled += 1
                             logger.info(f"Cancelled order {order.id} for {symbol} (order symbol: {order.symbol})")
                         except Exception as e:

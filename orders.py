@@ -55,7 +55,7 @@ async def cancel_stale_orders(symbol: str | None = None):
         cancelled = 0
         for order in orders:
             try:
-                await asyncio.to_thread(trading_client.cancel_order, order.id)
+                await asyncio.to_thread(trading_client.cancel_order_by_id, order.id)
                 cancelled += 1
                 logger.info(f"Cancelled stale order {order.id} for {symbol or 'all'} (symbol={order.symbol})")
             except Exception as e:
