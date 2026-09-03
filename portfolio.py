@@ -113,7 +113,7 @@ async def close_position(symbol: str, pos_data: dict | None = None,
 
             limit_price = _sanitize_price(current_price * (1.0 - SELL_SLIPPAGE_BUFFER)) if current_price else avg_entry
             order_data = LimitOrderRequest(
-                symbol=symbol,
+                symbol=pos.symbol,
                 qty=qty,
                 limit_price=limit_price,
                 side=OrderSide.SELL,
