@@ -1,4 +1,3 @@
-
 import asyncio
 import math
 import os
@@ -20,6 +19,7 @@ def _sanitize_price(price: float) -> float:
 
 
 def normalize_symbol(symbol: str) -> str:
+    """Convert 'BTC/USD' -> 'BTCUSD' for Alpaca endpoints that require no-slash format."""
     return symbol.replace("/", "")
 
 
@@ -56,6 +56,26 @@ def _get_pos_qty_available(pos) -> tuple[float, float]:
     else:
         qty_avail = qty_total
     return qty_avail, qty_total
+
+
+def _extract_api_error(e: Exception) -> tuple[int | None, str | None, int | None]:
+    """Safely extract status_code, code, and message from an APIError."""
+    error_code = None
+    error_msg = str(e)
+    error_status = None
+    try:
+        error_code = e.code
+    except Exception:
+        pass
+    try:
+        error_msg = e.message
+    except Exception:
+        pass
+    try:
+        error_status = e.status_code
+    except Exception:
+        pass
+    return error_status, error_code, error_msg
 
 
 async def close_position(symbol: str, pos_data: dict | None = None,
@@ -175,22 +195,19 @@ async def close_position(symbol: str, pos_data: dict | None = None,
             }
 
         except APIError as e:
-            error_code = None
-            error_msg = str(e)
-            error_status = None
-            try:
-                error_code = e.code
-                error_msg = e.message
-                error_status = e.status_code
-            except Exception:
-                pass
+            error_status, error_code, error_msg = _extract_api_error(e)
 
             logger.warning(
                 f"Close {symbol} attempt {attempt+1} failed: "
                 f"status={error_status} code={error_code} msg={error_msg}"
             )
 
-            if error_status == 403 and str(error_code) == "10000":
+            is_insufficient = (
+                (error_status == 403 and str(error_code) == "10000") or
+                (error_msg and "insufficient" in error_msg.lower())
+            )
+
+            if is_insufficient:
                 # insufficient balance: cancel stale orders, wait, retry
                 await _cancel_orders_for_symbol(symbol)
                 await asyncio.sleep(2 * (attempt + 1))
@@ -202,7 +219,8 @@ async def close_position(symbol: str, pos_data: dict | None = None,
                     f"trying market close via close_position API"
                 )
                 if pos is not None:
-                    return await _close_position_market(pos.symbol, qty_total, avg_entry, current_price)
+                    # Use normalized symbol for the URL path (no slashes)
+                    return await _close_position_market(normalize_symbol(pos.symbol), qty_total, avg_entry, current_price)
                 return None
 
         except Exception as e:
@@ -223,10 +241,14 @@ async def _close_position_market(
 
     This uses DELETE /positions/{symbol} which handles qty_available
     internally and always closes the full position.
+
+    The symbol must be normalized (no slashes) for the URL path.
     """
     try:
         from alpaca.trading.requests import ClosePositionRequest
 
+        # Ensure symbol has no slashes for URL path
+        alpaca_sym = normalize_symbol(alpaca_sym)
         qty_str = str(math.floor(qty * 1e8) / 1e8)
         close_req = ClosePositionRequest(qty=qty_str)
         order = await asyncio.to_thread(

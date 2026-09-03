@@ -5,6 +5,7 @@ from decimal import Decimal, ROUND_DOWN
 
 from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.common.exceptions import APIError
 
 from config import logger, trading_client, BOT_NAME, FEE_RATE, SELL_SLIPPAGE_BUFFER
 from database import record_trade
@@ -12,6 +13,26 @@ from database import record_trade
 
 def _normalize_symbol(symbol: str) -> str:
     return symbol.replace("/", "")
+
+
+def _extract_api_error(e: Exception) -> tuple[int | None, str | None, int | None]:
+    """Safely extract status_code, code, and message from an APIError."""
+    error_code = None
+    error_msg = str(e)
+    error_status = None
+    try:
+        error_code = e.code
+    except Exception:
+        pass
+    try:
+        error_msg = e.message
+    except Exception:
+        pass
+    try:
+        error_status = e.status_code
+    except Exception:
+        pass
+    return error_status, error_code, error_msg
 
 
 async def cancel_stale_orders(symbol: str | None = None):
@@ -71,64 +92,133 @@ async def place_order(
         - order_id: str
     Returns None on failure.
     """
-    try:
-        if side == OrderSide.BUY:
-            # BUY limit price should be below market to ensure fill (not above)
-            raw_limit   = price * (1.0 - SELL_SLIPPAGE_BUFFER) if price else None
-            limit_price = _sanitize_price(raw_limit) if raw_limit else None
-            order_data  = LimitOrderRequest(
-                symbol=symbol, qty=qty, side=side,
-                time_in_force=TimeInForce.GTC, limit_price=limit_price,
-            )
-        else:
-            qty        = math.floor(qty * 1e8) / 1e8
-            raw_limit  = price * (1.0 - SELL_SLIPPAGE_BUFFER) if price else None
-            limit_price = _sanitize_price(raw_limit) if raw_limit else None
-            order_data = LimitOrderRequest(
-                symbol=symbol, qty=qty, side=side,
-                time_in_force=TimeInForce.GTC, limit_price=limit_price,
+    from alpaca.common.exceptions import APIError
+
+    def _extract_api_error(e: Exception) -> tuple[int | None, str | None, int | None]:
+        error_code = None
+        error_msg = str(e)
+        error_status = None
+        try:
+            error_code = e.code
+        except Exception:
+            pass
+        try:
+            error_msg = e.message
+        except Exception:
+            pass
+        try:
+            error_status = e.status_code
+        except Exception:
+            pass
+        return error_status, error_code, error_msg
+
+    for attempt in range(3):
+        try:
+            if side == OrderSide.BUY:
+                # BUY limit price should be below market to ensure fill (not above)
+                raw_limit = price * (1.0 - SELL_SLIPPAGE_BUFFER) if price else None
+                limit_price = _sanitize_price(raw_limit) if raw_limit else None
+                order_data = LimitOrderRequest(
+                    symbol=symbol, qty=qty, side=side,
+                    time_in_force=TimeInForce.GTC, limit_price=limit_price,
+                )
+            else:
+                qty = math.floor(qty * 1e8) / 1e8
+                raw_limit = price * (1.0 - SELL_SLIPPAGE_BUFFER) if price else None
+                limit_price = _sanitize_price(raw_limit) if raw_limit else None
+                order_data = LimitOrderRequest(
+                    symbol=symbol, qty=qty, side=side,
+                    time_in_force=TimeInForce.GTC, limit_price=limit_price,
+                )
+
+            logger.debug(
+                f"Place {side.value} {symbol}: qty={qty} limit_price={limit_price} symbol={symbol}"
             )
 
-        # Offload blocking Alpaca HTTP + DB calls to threads
-        order = await asyncio.to_thread(trading_client.submit_order, order_data=order_data)
+            order = await asyncio.to_thread(trading_client.submit_order, order_data=order_data)
 
-        # Extract actual fill information
-        fill_price = float(order.filled_avg_price) if order.filled_avg_price else None
-        filled_qty = float(order.filled_qty) if order.filled_qty else 0.0
-        
-        # If order not filled yet (limit order), wait briefly and check fill status
-        if filled_qty == 0.0 and fill_price is None:
-            # Poll for fill status (limit order may fill asynchronously)
-            for _ in range(5):  # up to 5 seconds
-                await asyncio.sleep(1)
-                order = await asyncio.to_thread(trading_client.get_order_by_id, order.id)
-                if order.filled_qty and float(order.filled_qty) > 0:
-                    fill_price = float(order.filled_avg_price)
-                    filled_qty = float(order.filled_qty)
-                    break
-        
-        # If still no fill, return failure (caller will handle)
-        if filled_qty == 0.0:
-            logger.warning(f"Order {order.id} not filled after wait")
+            # Extract actual fill information
+            fill_price = float(order.filled_avg_price) if order.filled_avg_price else None
+            filled_qty = float(order.filled_qty) if order.filled_qty else 0.0
+
+            # If order not filled yet (limit order), wait briefly and check fill status
+            if filled_qty == 0.0 and fill_price is None:
+                # Poll for fill status (limit order may fill asynchronously)
+                for _ in range(5):  # up to 5 seconds
+                    await asyncio.sleep(1)
+                    order = await asyncio.to_thread(trading_client.get_order_by_id, order.id)
+                    if order.filled_qty and float(order.filled_qty) > 0:
+                        fill_price = float(order.filled_avg_price)
+                        filled_qty = float(order.filled_qty)
+                        break
+
+            # If still no fill, return failure (caller will handle)
+            if filled_qty == 0.0:
+                logger.warning(f"Order {order.id} not filled after wait")
+                return None
+
+            fee = (filled_qty * fill_price) * FEE_RATE
+
+            # Record with actual fill price and fee
+            await asyncio.to_thread(record_trade, BOT_NAME, symbol, side.value, filled_qty,
+                                    fill_price, fill_price=fill_price, fee=fee,
+                                    order_id=order.id)
+            logger.info(f"{'BUY' if side == OrderSide.BUY else 'SELL'} {symbol} qty={filled_qty:.6f} @ ${fill_price:.4f} | fee=${fee:.2f}")
+
+            return {
+                "success": True,
+                "qty": filled_qty,
+                "fill_price": fill_price,
+                "fee": fee,
+                "order_id": order.id,
+                "trade_value": filled_qty * fill_price,  # actual dollar value filled
+            }
+
+        except APIError as e:
+            error_status = None
+            error_code = None
+            error_msg = str(e)
+            try:
+                error_status = e.status_code
+            except Exception:
+                pass
+            try:
+                error_code = e.code
+            except Exception:
+                pass
+            try:
+                error_msg = e.message
+            except Exception:
+                pass
+
+            logger.warning(
+                f"Place {side.value} {symbol} attempt {attempt+1} failed: "
+                f"status={error_status} code={error_code} msg={error_msg}"
+            )
+
+            # Check for insufficient balance (buying power)
+            is_insufficient = (
+                (error_status == 403 and str(error_code) == "10000") or
+                (error_msg and "insufficient" in error_msg.lower())
+            )
+
+            if is_insufficient:
+                logger.warning(
+                    f"Insufficient balance for {symbol} {side.value}, retrying..."
+                )
+                # Brief pause before retry
+                await asyncio.sleep(2 * (attempt + 1))
+                continue
+            else:
+                logger.error(f"Order failed ({side.value} {symbol}): {error_msg}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Order failed ({side.value} {symbol}): {type(e).__name__}: {e}")
+            if attempt < 2:
+                await asyncio.sleep(2 * (attempt + 1))
+                continue
             return None
-        
-        fee = (filled_qty * fill_price) * FEE_RATE
 
-        # Record with actual fill price and fee
-        await asyncio.to_thread(record_trade, BOT_NAME, symbol, side.value, filled_qty,
-                                fill_price, fill_price=fill_price, fee=fee,
-                                order_id=order.id)
-        logger.info(f"{'BUY' if side == OrderSide.BUY else 'SELL'} {symbol} qty={filled_qty:.6f} @ ${fill_price:.4f} | fee=${fee:.2f}")
-
-        return {
-            "success": True,
-            "qty": filled_qty,
-            "fill_price": fill_price,
-            "fee": fee,
-            "order_id": order.id,
-            "trade_value": filled_qty * fill_price,  # actual dollar value filled
-        }
-
-    except Exception as e:
-        logger.error(f"Order failed ({side.value} {symbol}): {e}")
-        return None
+    logger.error(f"Place {side.value} {symbol} failed after 3 retries")
+    return None
