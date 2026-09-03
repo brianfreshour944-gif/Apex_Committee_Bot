@@ -116,8 +116,13 @@ async def place_order(
     for attempt in range(3):
         try:
             if side == OrderSide.BUY:
-                # BUY limit price should be below market to ensure fill (not above)
-                raw_limit = price * (1.0 - SELL_SLIPPAGE_BUFFER) if price else None
+                # FIX: a BUY limit must be priced ABOVE market to cross the
+                # spread and fill immediately. The previous code priced it
+                # BELOW market (price * (1 - buffer)) -- a resting buy limit
+                # that only fills if price falls 0.2%, which combined with
+                # cancel_stale_orders() every cycle meant BUY entries almost
+                # never executed. The old comment claimed the opposite.
+                raw_limit = price * (1.0 + SELL_SLIPPAGE_BUFFER) if price else None
                 limit_price = _sanitize_price(raw_limit) if raw_limit else None
                 order_data = LimitOrderRequest(
                     symbol=symbol, qty=qty, side=side,

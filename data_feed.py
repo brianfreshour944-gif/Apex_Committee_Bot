@@ -20,8 +20,17 @@ async def get_ohlcv(symbol: str, limit: int = 80) -> pd.DataFrame | None:
         req  = CryptoBarsRequest(
             symbol_or_symbols=symbol,
             timeframe=TimeFrame(15, TimeFrameUnit.Minute),
-            limit=limit,
             start=start_time,
+            # FIX (verified against live API 2026-09-03): `limit` is a TOTAL cap
+            # counted FORWARD from `start` by alpaca-py's _get_marketdata (which
+            # auto-paginates but stops at `limit` total items). With
+            # start=now-5d and limit=80, the request returned the FIRST 80 bars
+            # of the window -- i.e. bars 5 -> 3 days old (last bar measured
+            # 100.1 hours old in production). Every indicator and "current
+            # price" was computed on multi-day-old data, which is why PnL was
+            # frozen ("Take profit +38.3%" every cycle) and SELL limit orders
+            # never filled. Omitting `limit` paginates the full window ending
+            # at `now`, so bars[-1] is the most recently CLOSED bar.
         )
         # FIXED: was a direct blocking call with no await -- meant
         # main.py's asyncio.gather(*[get_ohlcv(s) for s in SYMBOLS]) provided

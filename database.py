@@ -85,7 +85,7 @@ def record_trade(bot_name, symbol, side, qty, price, fill_price=None, fee=0.0, o
         with conn.cursor() as cur:
             value = (price or 0) * qty
             cur.execute("""INSERT INTO trades (bot_name,exchange,symbol,side,price,quantity,value,fee,fill_price,order_id,timestamp)
-                VALUES (%s,'Alpaca',%s,%s,%s,%s,%s,%s,%s,NOW())""",
+                VALUES (%s,'Alpaca',%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
                 (bot_name, symbol, side, price or 0, qty, value, fee, fill_price, str(order_id) if order_id else None))
         conn.commit()
     except Exception as e:
