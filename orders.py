@@ -26,7 +26,7 @@ async def cancel_stale_orders(symbol: str | None = None):
         if symbol is not None:
             alpaca_sym = _normalize_symbol(symbol)
             all_orders = await asyncio.to_thread(trading_client.get_orders)
-            orders = [o for o in all_orders if o.symbol == alpaca_sym and o.status in ("new", "partially_filled", "accepted", "pending_new")]
+            orders = [o for o in all_orders if (o.symbol == alpaca_sym or o.symbol == symbol) and o.status in ("new", "partially_filled", "accepted", "pending_new")]
         else:
             all_orders = await asyncio.to_thread(trading_client.get_orders)
             orders = [o for o in all_orders if o.status in ("new", "partially_filled", "accepted", "pending_new")]

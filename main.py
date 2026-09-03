@@ -174,6 +174,9 @@ async def run():
             # Prevents accumulation of unfilled limit orders that tie up buying
             # power and cause the bot to sit idle with pending orders.
             await cancel_stale_orders()
+            # Brief delay to let Alpaca API propagate cancellations
+            # (frees up qty_available and buying_power before we query them)
+            await asyncio.sleep(0.5)
 
             # ── Account state ──────────────────────────────────────────────
             equity, buying_power, cash = await get_account_state()
