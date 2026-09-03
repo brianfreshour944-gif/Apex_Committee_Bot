@@ -108,9 +108,18 @@ async def sync_state_with_alpaca():
     global start_equity
     try:
         current_positions = await get_all_positions()
-        if not current_positions:
+        # None = the fetch itself failed (API down / network error). Keep local
+        # state untouched and retry next cycle rather than acting on unknown data.
+        # FIX: the old `if not current_positions: return` also early-returned on a
+        # SUCCESSFUL fetch that legitimately contains zero positions -- which made
+        # the stale-state removal branch below unreachable exactly when a position
+        # was closed during the crash and nothing remains on the exchange. Phantom
+        # entry_times then persisted forever, permanently inflating the
+        # MAX_OPEN_POSITIONS gate (verified in crash simulation, Scenario 3).
+        if current_positions is None:
+            logger.warning("[SYNC] Positions fetch failed at startup -- keeping local state")
             return
-        
+
         alpaca_symbols = set(current_positions.keys())
         local_symbols = set(entry_times.keys())
         
@@ -190,6 +199,15 @@ async def run():
 
             # ── Fetch all positions ────────────────────────────────────────
             current_positions = await get_all_positions()
+            # FIX (fail-closed): None means the fetch FAILED, not "flat". The old
+            # {} fallback made the bot treat held symbols as flat: exits were
+            # silently skipped AND new BUYs could stack on top of existing
+            # positions during an Alpaca outage. Now entries are gated off for
+            # the cycle; state is left untouched for the next cycle to retry.
+            positions_ok = current_positions is not None
+            if not positions_ok:
+                logger.error("[!] Positions fetch failed -- no entries this cycle (fail-closed)")
+                current_positions = {}
 
             # ── Parallel OHLCV fetch ─────────────────────────────────────────
             # Fetch all symbols' OHLCV data concurrently to avoid sequential
@@ -298,12 +316,24 @@ async def run():
                             peak_price = peak_prices.get(alpaca_sym, avg_entry)
 
                             # Update peak price for trailing stop
+                            peak_updated = False
                             if price > peak_price:
                                 peak_prices[alpaca_sym] = price
                                 peak_price = price
+                                peak_updated = True
 
                             pnl_pct    = (price - avg_entry) / avg_entry if avg_entry > 0 else 0.0
                             entry_dt   = entry_times.get(alpaca_sym, datetime.now(timezone.utc))
+                        # FIX (crash recovery): persist the new peak immediately.
+                        # peak_prices updates were only saved at BUY/EXIT, so a
+                        # crash mid-hold silently reset the trailing stop's peak
+                        # to the BUY-time value (or avg_entry) -- verified in
+                        # simulation: a +6% run-up lost its trailing protection
+                        # and rode down to the -2% stop (a $35 vs -$18 swing on
+                        # a $750 position). Must be OUTSIDE the lock block:
+                        # save_state() acquires the same non-reentrant lock.
+                        if peak_updated:
+                            await save_state()
                         held_h     = (datetime.now(timezone.utc) - entry_dt).total_seconds() / 3600
 
                         # Calculate trailing stop price (FIXED: was previously undefined)
@@ -395,6 +425,11 @@ async def run():
                         continue
 
                     # ── ENTRY logic ────────────────────────────────────────────
+
+                    # Fail-closed: do not open NEW exposure while the positions
+                    # fetch is failing -- we cannot verify what we already hold.
+                    if not positions_ok:
+                        continue
 
                     # Cooldown check
                     if now < cooldowns.get(alpaca_sym, 0):

@@ -194,8 +194,14 @@ async def get_account_state() -> tuple[float, float, float]:
         return 0.0, 0.0, 0.0
 
 
-async def get_all_positions() -> dict:
-    """Fetch all positions. Offloaded to thread to avoid blocking the event loop."""
+async def get_all_positions() -> dict | None:
+    """Fetch all positions. Offloaded to thread to avoid blocking the event loop.
+
+    Returns None on fetch FAILURE (so callers can fail-closed instead of
+    mistaking an API error for 'no positions' -- the previous {} fallback made
+    main.py treat held symbols as flat, allowing duplicate BUYs on top of
+    existing positions, and blocked exits for the whole cycle).
+    """
     from config import trading_client
     try:
         positions = await asyncio.to_thread(trading_client.get_all_positions)
@@ -209,7 +215,7 @@ async def get_all_positions() -> dict:
         }
     except Exception as e:
         logger.error(f"Positions fetch failed: {e}")
-        return {}
+        return None
 
 
 async def get_orderbook_ratio(symbol: str) -> float | None:
