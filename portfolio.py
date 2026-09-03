@@ -62,10 +62,18 @@ async def close_position(symbol: str, pos_data: dict | None = None,
             logger.warning(f"Close failed {symbol}: position no longer exists")
             return None
 
-        qty = float(pos.qty)
+        qty_available = float(pos.qty_available or pos.qty)
+        qty_total = float(pos.qty)
         avg_entry = float(pos.avg_entry_price)
 
-        qty = math.floor(qty * 1e8) / 1e8
+        # qty_available may be less than qty if open orders block the position.
+        # Using qty_available prevents 40310000 (insufficient balance) errors.
+        if qty_total > 0 and qty_available < qty_total * 0.999:
+            logger.warning(
+                f"Close {symbol}: qty_available={qty_available:.8f} < "
+                f"qty={qty_total:.8f} (open orders may still be cancelling)"
+            )
+        qty = math.floor(qty_available * 1e8) / 1e8
 
         if qty <= 0:
             logger.warning(f"Cannot close {symbol}: qty={qty}")
