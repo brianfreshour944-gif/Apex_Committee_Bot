@@ -293,7 +293,7 @@ async def _close_position_full(
         alpaca_sym = normalize_symbol(alpaca_sym)
         order = await asyncio.to_thread(
             trading_client.close_position,
-            symbol_or_symbol_uuid=alpaca_sym,
+            symbol_or_asset_id=alpaca_sym,
         )
 
         filled_qty = float(order.filled_qty) if order.filled_qty else 0.0
@@ -337,7 +337,7 @@ async def _close_position_market(
         close_req = ClosePositionRequest(qty=qty_str)
         order = await asyncio.to_thread(
             trading_client.close_position,
-            symbol_or_symbol_uuid=alpaca_sym,
+            symbol_or_asset_id=alpaca_sym,
             close_options=close_req,
         )
 
