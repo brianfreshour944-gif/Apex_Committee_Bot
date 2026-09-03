@@ -26,7 +26,6 @@ def normalize_symbol(symbol: str) -> str:
 async def _cancel_orders_for_symbol(symbol: str):
     """Cancel all open orders for a specific symbol to free up the position."""
     try:
-        from alpaca.trading.enums import OrderSide
         alpaca_sym = normalize_symbol(symbol)
         all_orders = await asyncio.to_thread(trading_client.get_orders)
         for order in all_orders:
@@ -40,6 +39,23 @@ async def _cancel_orders_for_symbol(symbol: str):
         await asyncio.sleep(0.5)
     except Exception as e:
         logger.warning(f"Cancel orders for {symbol} failed: {e}")
+
+
+def _get_pos_qty_available(pos) -> tuple[float, float]:
+    """Returns (qty_to_use, qty_total) from an Alpaca Position object.
+
+    Uses qty_available when populated (crypto may return it); falls back to qty.
+    """
+    qty_total = float(pos.qty)
+    qty_avail = getattr(pos, "qty_available", None)
+    if qty_avail is not None:
+        try:
+            qty_avail = float(qty_avail)
+        except (ValueError, TypeError):
+            qty_avail = qty_total
+    else:
+        qty_avail = qty_total
+    return qty_avail, qty_total
 
 
 async def close_position(symbol: str, pos_data: dict | None = None,
@@ -64,11 +80,14 @@ async def close_position(symbol: str, pos_data: dict | None = None,
         - trade_value: float (actual dollar value filled)
     Returns None on failure.
     """
-    from alpaca.trading.requests import LimitOrderRequest
+    from alpaca.trading.requests import LimitOrderRequest, ClosePositionRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.common.exceptions import APIError
 
     alpaca_sym = normalize_symbol(symbol)
+    pos = None
+    qty_total = 0.0
+    avg_entry = 0.0
 
     for attempt in range(3):
         try:
@@ -84,20 +103,17 @@ async def close_position(symbol: str, pos_data: dict | None = None,
                 logger.warning(f"Close failed {symbol}: position no longer exists")
                 return None
 
-            qty_total = float(pos.qty)
-            # qty_available may be None for crypto; fall back to qty
-            qty_available = float(pos.qty_available or pos.qty)
+            qty_avail, qty_total = _get_pos_qty_available(pos)
             avg_entry = float(pos.avg_entry_price)
 
-            # Use qty_available if it's meaningfully less than qty
-            # (indicates open orders still blocking the position)
-            if qty_available > 0 and qty_available < qty_total:
+            # qty_available may be less than qty if open orders block the position.
+            if qty_total > 0 and qty_avail < qty_total * 0.999:
                 logger.info(
-                    f"Close {symbol}: using qty_available={qty_available:.8f} "
-                    f"< qty={qty_total:.8f}"
+                    f"Close {symbol}: qty_available={qty_avail:.8f} < "
+                    f"qty={qty_total:.8f} (open orders may still be cancelling)"
                 )
-            use_qty = min(qty_available, qty_total)
 
+            use_qty = min(qty_avail, qty_total)
             # Floor to 8 decimal places to avoid float precision issues
             qty = math.floor(use_qty * 1e8) / 1e8
 
@@ -118,6 +134,11 @@ async def close_position(symbol: str, pos_data: dict | None = None,
                 limit_price=limit_price,
                 side=OrderSide.SELL,
                 time_in_force=TimeInForce.GTC,
+            )
+
+            logger.debug(
+                f"Close {symbol}: placing SELL limit order "
+                f"qty={qty} limit_price={limit_price} symbol={pos.symbol}"
             )
 
             order = await asyncio.to_thread(trading_client.submit_order, order_data=order_data)
@@ -154,24 +175,38 @@ async def close_position(symbol: str, pos_data: dict | None = None,
             }
 
         except APIError as e:
-            error_code = e.code if hasattr(e, 'code') else None
-            error_msg = e.message if hasattr(e, 'message') else str(e)
-            error_status = e.status_code if hasattr(e, 'status_code') else None
+            error_code = None
+            error_msg = str(e)
+            error_status = None
+            try:
+                error_code = e.code
+                error_msg = e.message
+                error_status = e.status_code
+            except Exception:
+                pass
+
             logger.warning(
                 f"Close {symbol} attempt {attempt+1} failed: "
                 f"status={error_status} code={error_code} msg={error_msg}"
             )
-            if error_status == 403 and error_code == 10000:
+
+            if error_status == 403 and str(error_code) == "10000":
                 # insufficient balance: cancel stale orders, wait, retry
                 await _cancel_orders_for_symbol(symbol)
                 await asyncio.sleep(2 * (attempt + 1))
                 continue
             else:
-                # Non-retryable error
-                logger.error(f"Close failed {symbol}: {error_msg}")
+                # Non-retryable error - try market order fallback
+                logger.warning(
+                    f"Limit SELL failed for {symbol} (code={error_code}), "
+                    f"trying market close via close_position API"
+                )
+                if pos is not None:
+                    return await _close_position_market(pos.symbol, qty_total, avg_entry, current_price)
                 return None
+
         except Exception as e:
-            logger.error(f"Close failed {symbol}: {e}")
+            logger.error(f"Close failed {symbol}: {type(e).__name__}: {e}")
             if attempt < 2:
                 await asyncio.sleep(2 * (attempt + 1))
                 continue
@@ -179,6 +214,47 @@ async def close_position(symbol: str, pos_data: dict | None = None,
 
     logger.error(f"Close {symbol} failed after 3 retries")
     return None
+
+
+async def _close_position_market(
+    alpaca_sym: str, qty: float, avg_entry: float, current_price: float | None
+) -> dict | None:
+    """Fallback: use Alpaca's built-in close_position API (market order).
+
+    This uses DELETE /positions/{symbol} which handles qty_available
+    internally and always closes the full position.
+    """
+    try:
+        from alpaca.trading.requests import ClosePositionRequest
+
+        qty_str = str(math.floor(qty * 1e8) / 1e8)
+        close_req = ClosePositionRequest(qty=qty_str)
+        order = await asyncio.to_thread(
+            trading_client.close_position,
+            symbol_or_symbol_uuid=alpaca_sym,
+            close_options=close_req,
+        )
+
+        filled_qty = float(order.filled_qty) if order.filled_qty else 0.0
+        fill_price = float(order.filled_avg_price) if order.filled_avg_price else (current_price or avg_entry)
+
+        if filled_qty == 0.0:
+            logger.warning(f"Market close {alpaca_sym}: no fills")
+            return None
+
+        fee = (filled_qty * fill_price) * FEE_RATE
+        logger.info(f"Closed (market): {alpaca_sym} qty={filled_qty:.6f} @ ${fill_price:.4f} | fee=${fee:.2f}")
+
+        return {
+            "fill_price": fill_price,
+            "qty": filled_qty,
+            "fee": fee,
+            "order_id": order.id,
+            "trade_value": filled_qty * fill_price,
+        }
+    except Exception as e:
+        logger.error(f"Market close {alpaca_sym} failed: {type(e).__name__}: {e}")
+        return None
 
 
 async def close_all_positions():
