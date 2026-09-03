@@ -12,7 +12,7 @@ from database import record_trade
 
 
 def _normalize_symbol(symbol: str) -> str:
-    return symbol.replace("/", "")
+    return symbol.replace("/", "").replace("-", "").replace("_", "").upper()
 
 
 def _extract_api_error(e: Exception) -> tuple[int | None, str | None, int | None]:
@@ -57,8 +57,9 @@ async def cancel_stale_orders(symbol: str | None = None):
             try:
                 await asyncio.to_thread(trading_client.cancel_order, order.id)
                 cancelled += 1
-            except Exception:
-                pass
+                logger.info(f"Cancelled stale order {order.id} for {symbol or 'all'} (symbol={order.symbol})")
+            except Exception as e:
+                logger.warning(f"Failed to cancel stale order {order.id}: {e}")
         
         if cancelled > 0:
             logger.info(f"Cancelled {cancelled} stale open order(s)")

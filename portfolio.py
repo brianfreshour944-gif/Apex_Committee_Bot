@@ -20,7 +20,7 @@ def _sanitize_price(price: float) -> float:
 
 def normalize_symbol(symbol: str) -> str:
     """Convert 'BTC/USD' -> 'BTCUSD' for Alpaca endpoints that require no-slash format."""
-    return symbol.replace("/", "")
+    return symbol.replace("/", "").replace("-", "").replace("_", "").upper()
 
 
 async def _cancel_orders_for_symbol(symbol: str):
@@ -39,8 +39,12 @@ async def _cancel_orders_for_symbol(symbol: str):
                         try:
                             await asyncio.to_thread(trading_client.cancel_order, order.id)
                             cancelled += 1
-                        except Exception:
-                            pass
+                            logger.info(f"Cancelled order {order.id} for {symbol} (order symbol: {order.symbol})")
+                        except Exception as e:
+                            logger.warning(f"Failed to cancel order {order.id} for {symbol}: {e}")
+                    else:
+                        # Debug: log orders that don't match
+                        logger.debug(f"Order {order.id} symbol mismatch: order={order.symbol}, expected={symbol} or {alpaca_sym}")
             if cancelled > 0:
                 logger.info(f"Cancelled {cancelled} stale order(s) for {symbol} (attempt {attempt+1})")
             # Exponential backoff: 1s, 2s, 4s
@@ -124,6 +128,7 @@ async def close_position(symbol: str, pos_data: dict | None = None,
             positions = await asyncio.to_thread(trading_client.get_all_positions)
             pos = None
             for p in positions:
+                logger.debug(f"Position found: symbol={p.symbol}, qty={p.qty}, qty_available={getattr(p, 'qty_available', 'N/A')}")
                 if p.symbol == alpaca_sym or p.symbol == symbol:
                     pos = p
                     break
@@ -220,17 +225,19 @@ async def close_position(symbol: str, pos_data: dict | None = None,
                 # insufficient balance: cancel stale orders, wait, retry
                 await _cancel_orders_for_symbol(symbol)
                 # Wait for qty_available to match qty (cancellations propagated)
-                for _ in range(6):  # up to 6s
+                for poll in range(6):  # up to 6s
                     await asyncio.sleep(1.0)
                     positions = await asyncio.to_thread(trading_client.get_all_positions)
+                    found = False
                     for p in positions:
                         if p.symbol == alpaca_sym or p.symbol == symbol:
-                            _, q = _get_pos_qty_available(p)
-                            if q >= float(p.qty) * 0.999:
+                            q_avail, q_total = _get_pos_qty_available(p)
+                            logger.info(f"Poll {poll+1}: {symbol} qty_available={q_avail:.8f}, qty={q_total:.8f}")
+                            if q_avail >= q_total * 0.999:
+                                found = True
                                 break
-                    else:
-                        continue
-                    break
+                    if found:
+                        break
                 continue
             else:
                 # Non-retryable error - try market order fallback
