@@ -158,8 +158,21 @@ async def close_position(symbol: str, pos_data: dict | None = None,
                 qty = math.floor(qty * 1e8) / 1e8
 
             if qty <= 0:
-                logger.warning(f"Cannot close {symbol}: qty={qty}")
-                return None
+                # FIX (verified against production logs 2026-09-03): a position
+                # can exist with qty > 0 (so main.py's has_pos gate passes and
+                # EXIT fires every cycle) while the SELLABLE quantity floors to
+                # zero -- either dust (< 1e-8, e.g. residue from repeated
+                # partial closes) or qty_available=0 with the assets locked.
+                # The old code just warned "Cannot close: qty=0.0" and returned
+                # None, looping forever. Fall back to Alpaca's close-position
+                # API WITHOUT a qty parameter: DELETE /positions/{symbol}
+                # closes the entire remaining position, dust included.
+                logger.warning(
+                    f"Close {symbol}: sellable qty=0 (dust or locked, "
+                    f"qty_total={qty_total:.8f}, qty_avail={qty_avail:.8f}) -- "
+                    f"falling back to full-position close API"
+                )
+                return await _close_position_full(alpaca_sym, qty_total, avg_entry, current_price)
 
             # ── FIX: use a MARKET order for exits ─────────────────────────────
             # The previous SELL *limit* order was priced off the stale 15-min
@@ -264,6 +277,45 @@ async def close_position(symbol: str, pos_data: dict | None = None,
 
     logger.error(f"Close {symbol} failed after 3 retries")
     return None
+
+
+async def _close_position_full(
+    alpaca_sym: str, qty: float, avg_entry: float, current_price: float | None
+) -> dict | None:
+    """Close the ENTIRE remaining position via Alpaca's close-position API.
+
+    Unlike _close_position_market, no qty is passed: DELETE /positions/{symbol}
+    closes whatever the position holds, including dust below the 1e-8 floor
+    that makes a sellable-qty market order impossible. Used as the fallback
+    when the floored sellable quantity is zero.
+    """
+    try:
+        alpaca_sym = normalize_symbol(alpaca_sym)
+        order = await asyncio.to_thread(
+            trading_client.close_position,
+            symbol_or_symbol_uuid=alpaca_sym,
+        )
+
+        filled_qty = float(order.filled_qty) if order.filled_qty else 0.0
+        fill_price = float(order.filled_avg_price) if order.filled_avg_price else (current_price or avg_entry)
+
+        if filled_qty == 0.0:
+            logger.warning(f"Full close {alpaca_sym}: no fills (position may already be gone)")
+            return None
+
+        fee = (filled_qty * fill_price) * FEE_RATE
+        logger.info(f"Closed (full, dust-safe): {alpaca_sym} qty={filled_qty:.8f} @ ${fill_price:.4f} | fee=${fee:.2f}")
+
+        return {
+            "fill_price": fill_price,
+            "qty": filled_qty,
+            "fee": fee,
+            "order_id": order.id,
+            "trade_value": filled_qty * fill_price,
+        }
+    except Exception as e:
+        logger.error(f"Full close {alpaca_sym} failed: {type(e).__name__}: {e}")
+        return None
 
 
 async def _close_position_market(
