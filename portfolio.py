@@ -113,7 +113,7 @@ async def close_position(symbol: str, pos_data: dict | None = None,
         - trade_value: float (actual dollar value filled)
     Returns None on failure.
     """
-    from alpaca.trading.requests import LimitOrderRequest, ClosePositionRequest
+    from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest, ClosePositionRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.common.exceptions import APIError
 
@@ -161,26 +161,31 @@ async def close_position(symbol: str, pos_data: dict | None = None,
                 logger.warning(f"Cannot close {symbol}: qty={qty}")
                 return None
 
-            limit_price = _sanitize_price(current_price * (1.0 - SELL_SLIPPAGE_BUFFER)) if current_price else avg_entry
-            order_data = LimitOrderRequest(
+            # ── FIX: use a MARKET order for exits ─────────────────────────────
+            # The previous SELL *limit* order was priced off the stale 15-min
+            # bar close (current_price * (1 - buffer)). In a DUMP regime the
+            # live market drops below that limit price, so the order never
+            # fills: "SELL not filled after wait, cancelling" loops every
+            # cycle. A market order guarantees the exit fills immediately;
+            # the spread is the cost of exiting during a dump.
+            order_data = MarketOrderRequest(
                 symbol=pos.symbol,
                 qty=qty,
-                limit_price=limit_price,
                 side=OrderSide.SELL,
                 time_in_force=TimeInForce.GTC,
             )
 
-            logger.debug(
-                f"Close {symbol}: placing SELL limit order "
-                f"qty={qty} limit_price={limit_price} symbol={pos.symbol}"
+            logger.info(
+                f"Close {symbol}: placing SELL MARKET order "
+                f"qty={qty} symbol={pos.symbol}"
             )
 
             order = await asyncio.to_thread(trading_client.submit_order, order_data=order_data)
 
-            # Poll for fill status (limit order may fill asynchronously)
+            # Poll briefly for fill status (market orders usually fill in <1s)
             fill_price = None
             filled_qty = 0.0
-            for _ in range(10):  # up to 10 seconds
+            for _ in range(10):
                 await asyncio.sleep(1)
                 order = await asyncio.to_thread(trading_client.get_order_by_id, order.id)
                 if order.filled_qty and float(order.filled_qty) > 0:
@@ -191,7 +196,7 @@ async def close_position(symbol: str, pos_data: dict | None = None,
             if filled_qty == 0.0:
                 logger.warning(f"SELL {symbol} not filled after wait, cancelling")
                 try:
-                    await asyncio.to_thread(trading_client.cancel_order, order.id)
+                    await asyncio.to_thread(trading_client.cancel_order_by_id, order.id)
                 except Exception:
                     pass
                 return None
