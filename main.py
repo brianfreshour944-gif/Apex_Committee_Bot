@@ -209,6 +209,30 @@ async def run():
                 logger.error("[!] Positions fetch failed -- no entries this cycle (fail-closed)")
                 current_positions = {}
 
+            # ── Reconcile entry_times with live Alpaca positions ────────────
+            # sync_state_with_alpaca() only ran once at startup, so entry_times
+            # (used for the MAX_OPEN_POSITIONS gate and the [CHART] log) could
+            # drift from Alpaca's actual holdings during the run -- a missed
+            # fill confirmation, an API hiccup, etc. current_positions is
+            # already fetched above (no extra API call needed); reconcile
+            # entry_times against it every cycle so the position-count gate
+            # never blocks/allows trades based on stale local state.
+            if positions_ok:
+                alpaca_symbols = set(current_positions.keys())
+                local_symbols = set(entry_times.keys())
+                for alpaca_sym, pdata in current_positions.items():
+                    if alpaca_sym not in entry_times:
+                        entry_times[alpaca_sym] = datetime.now(timezone.utc)
+                        entry_prices[alpaca_sym] = pdata["avg_entry"]
+                        peak_prices[alpaca_sym] = pdata["avg_entry"]
+                        logger.info(f"[SYNC] Added missing position: {alpaca_sym}")
+                for alpaca_sym in local_symbols - alpaca_symbols:
+                    entry_times.pop(alpaca_sym, None)
+                    entry_prices.pop(alpaca_sym, None)
+                    peak_prices.pop(alpaca_sym, None)
+                    cooldowns.pop(alpaca_sym, None)
+                    logger.info(f"[SYNC] Removed stale local state: {alpaca_sym}")
+
             # ── Parallel OHLCV fetch ─────────────────────────────────────────
             # Fetch all symbols' OHLCV data concurrently to avoid sequential
             # network latency (3 symbols × ~200ms = ~600ms -> ~200ms with gather)
