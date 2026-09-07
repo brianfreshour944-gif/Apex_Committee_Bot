@@ -15,26 +15,6 @@ def _normalize_symbol(symbol: str) -> str:
     return symbol.replace("/", "").replace("-", "").replace("_", "").upper()
 
 
-def _extract_api_error(e: Exception) -> tuple[int | None, str | None, int | None]:
-    """Safely extract status_code, code, and message from an APIError."""
-    error_code = None
-    error_msg = str(e)
-    error_status = None
-    try:
-        error_code = e.code
-    except Exception:
-        pass
-    try:
-        error_msg = e.message
-    except Exception:
-        pass
-    try:
-        error_status = e.status_code
-    except Exception:
-        pass
-    return error_status, error_code, error_msg
-
-
 async def cancel_stale_orders(symbol: str | None = None):
     """Cancel all open orders for a symbol (or all symbols if None).
 
@@ -95,24 +75,6 @@ async def place_order(
     """
     from alpaca.common.exceptions import APIError
 
-    def _extract_api_error(e: Exception) -> tuple[int | None, str | None, int | None]:
-        error_code = None
-        error_msg = str(e)
-        error_status = None
-        try:
-            error_code = e.code
-        except Exception:
-            pass
-        try:
-            error_msg = e.message
-        except Exception:
-            pass
-        try:
-            error_status = e.status_code
-        except Exception:
-            pass
-        return error_status, error_code, error_msg
-
     for attempt in range(3):
         try:
             if side == OrderSide.BUY:
@@ -167,8 +129,7 @@ async def place_order(
 
             # Record with actual fill price and fee
             await asyncio.to_thread(record_trade, BOT_NAME, symbol, side.value, filled_qty,
-                                    fill_price, fill_price=fill_price, fee=fee,
-                                    order_id=order.id)
+                                    fill_price, fill_price, fee, order.id)
             logger.info(f"{'BUY' if side == OrderSide.BUY else 'SELL'} {symbol} qty={filled_qty:.6f} @ ${fill_price:.4f} | fee=${fee:.2f}")
 
             return {

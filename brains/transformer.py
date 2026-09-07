@@ -136,16 +136,27 @@ class TransformerBrain:
         self._load()
 
     def _fire_alert(self, reason):
-        """Schedule the Discord alert without blocking _load() (which runs at import time)."""
+        """Schedule the Discord alert without blocking _load() (which runs at import time).
+
+        At import time there is no running event loop, so asyncio.get_event_loop()
+        in Python 3.12+ returns a loop that is not running — create_task() on it
+        schedules the coroutine but it never executes. We handle both cases:
+        - If a loop is running (runtime), schedule via create_task
+        - If no loop is running (import time), start a short-lived loop to run the alert
+        """
+        coro = _alert_transformer_load_failure(reason)
         try:
-            coro = _alert_transformer_load_failure(reason)
-            asyncio.get_event_loop().create_task(coro)
+            loop = asyncio.get_running_loop()
+            asyncio.run_coroutine_threadsafe(coro, loop)
         except RuntimeError:
-            # No event loop running yet — fall back to synchronous send
-            asyncio.run_coroutine_threadsafe(
-                _alert_transformer_load_failure(reason),
-                asyncio.new_event_loop()
-            )
+            # No running loop — this happens at import time or in a thread
+            try:
+                loop = asyncio.get_event_loop()
+                if not loop.is_running():
+                    asyncio.run(coro)
+            except RuntimeError:
+                # No event loop at all — run in a fresh loop
+                asyncio.run(coro)
 
     def _load(self):
         if not os.path.exists(MODEL_PATH):

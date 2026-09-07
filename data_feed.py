@@ -13,7 +13,7 @@ from config import logger, data_client, SEQUENCE_LEN
 
 # ── OHLCV ─────────────────────────────────────────────────────────────────────
 
-async def get_ohlcv(symbol: str, limit: int = 80) -> pd.DataFrame | None:
+async def get_ohlcv(symbol: str) -> pd.DataFrame | None:
     """Fetch 15-minute bars. Returns finalized bars only (excludes current open bar)."""
     try:
         start_time = datetime.now(timezone.utc) - timedelta(days=5)
@@ -131,7 +131,9 @@ def _atr_pct(df: pd.DataFrame, period: int = 14) -> float:
     tr    = pd.concat([(high - low).abs(), (high - prev).abs(), (low - prev).abs()], axis=1).max(axis=1)
     atr   = tr.rolling(period).mean().iloc[-1]
     price = close.iloc[-1]
-    return float((atr / price) * 100) if price > 0 else 0.0
+    if price > 0 and not np.isnan(atr):
+        return float((atr / price) * 100)
+    return 0.0
 
 
 def _volume_ratio(series: pd.Series, avg_period: int = 20) -> float:

@@ -285,6 +285,64 @@ Exhaustive audit of all 15 source files + 3 test files. Findings organized by th
 6. ✅ `feature_engineering.py`: Merge conflict markers removed
 7. ✅ `main.py`: `trailing_stop_price` now defined
 
+## 9. Crash-Recovery and State-Reconciliation Audit
+
+### Finding 9.1: Position Reconciliation on Startup — ROBUST ✓
+- **File:** `main.py`:106-144 (`sync_state_with_alpaca`), 220-234 (per-cycle reconciliation)
+- **Verified by:** code tracing + simulation
+
+The bot has a multi-layer reconciliation system:
+1. `sync_state_with_alpaca()` at startup: queries Alpaca for actual positions, adds missing ones to local state, removes vanished ones. Correctly handles `None` (failed fetch) vs `{}` (empty) at line 119.
+2. Per-cycle reconciliation (lines 220-234): re-fetches positions every cycle as a redundant safety net.
+
+**Simulation result:** Position opened during crash, not in local state → `sync_state_with_alpaca` re-adds it correctly from Alpaca. Stale local state (position closed during crash) → reconciliation removes it.
+
+### Finding 9.2: Duplicate Order Risk — LOW ✓
+- **File:** `main.py`:464-467, 220-234
+- **Verified by:** code tracing
+
+Protection layers:
+1. `MAX_OPEN_POSITIONS` gate checked against `entry_times` (reconciled every cycle)
+2. `cooldowns` dict persisted in `save_state()`, survives restart
+3. `entry_times` reconciled with Alpaca positions every cycle
+
+**Edge case found:** If `save_state()` fails after BUY (line 535), cooldown is in memory but not persisted. If crash occurs immediately after, cooldown is lost on restart. However, the position is still on Alpaca and `sync_state_with_alpaca()` will re-add it, and `MAX_OPEN_POSITIONS` gate still prevents exceeding limits.
+
+**Severity:** LOW — only affects cooldown persistence, not position tracking
+
+### Finding 9.3: In-Memory State Loss (peak_prices) — LOW ⚠️
+- **File:** `main.py`:50-57, 345, 360
+- **Verified by:** code tracing
+
+State items persistence:
+- `entry_times`, `entry_prices`, `peak_prices`, `cooldowns` — all PERSISTED via `save_state()`
+- `start_equity` — RESET on every restart (by design — equity at bot start)
+
+**Issue found:** `peak_prices` is updated at line 345 (inside lock) but `save_state()` at line 360 is called OUTSIDE the lock. If crash occurs between these:
+- Peak price update is in memory but not saved
+- On restart, peak price reverts to last saved value
+- Trailing stop uses stale (lower) peak → more conservative → SAFER
+
+**Severity:** LOW — stale peak prices are more conservative (protective of capital)
+
+### Finding 9.4: Pending/In-Flight Orders at Crash — ROBUST ✓
+- **File:** `main.py`:185, `orders.py`:38-47
+- **Verified by:** code tracing
+
+On startup: `cancel_stale_orders()` runs FIRST (line 185), cancels all orders with status `new`, `partially_filled`, `accepted`, `pending_new`. Exceptions caught per-order (line 41). Buying power freed after 2s delay (line 188). No duplicate order can be placed. Partially filled orders appear as positions on Alpaca and are reconciled by `sync_state_with_alpaca()`.
+
+### Finding 9.5: State File Corruption — ROBUST ✓
+- **File:** `main.py`:68-103
+- **Verified by:** analysis
+
+`save_state()` uses atomic write pattern: write to `.tmp` file, then `os.replace()` (atomic on POSIX). `load_state()` has try/except that catches JSON decode errors. Orphaned `.tmp` files accumulate but don't cause issues.
+
+### Finding 9.6: Database Integrity — N/A ✓
+Bot uses PostgreSQL (optional via `DATABASE_URL`). No SQLite WAL issues. If `DATABASE_URL` is unset, all DB operations are skipped gracefully.
+
+### Finding 9.7: Shadow Arena / Decision Snapshot — NOT APPLICABLE
+No shadow arena or decision snapshot code exists in this codebase.
+
 ### Issues Found But Not Fixed (proposed):
 1. ⚠️ `tests/test_committee.py`: Unused `import pytest`
 2. ⚠️ `data_feed.py`: Unused `import os`
@@ -300,3 +358,5 @@ Exhaustive audit of all 15 source files + 3 test files. Findings organized by th
 4. ✅ No duplicate/conflicting files
 5. ✅ Entry point (Dockerfile CMD) is consistent
 6. ✅ All "FIXED" comments accurately describe the code changes
+7. ✅ Crash-recovery is robust — no issues causing wrong trades after restart
+8. ✅ All 3 tests pass with mock credentials

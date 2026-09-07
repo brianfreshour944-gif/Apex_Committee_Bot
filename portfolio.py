@@ -98,12 +98,9 @@ async def close_position(symbol: str, pos_data: dict | None = None,
 
     Args:
         symbol: The symbol to close (e.g., "BTC/USD")
-        pos_data: Optional position data dict from get_all_positions().
-                  If None, fetches positions from Alpaca.
-                  Keys expected: qty, avg_entry
-        current_price: Current market price for SELL limit order with
-                  slippage buffer protection. If None and pos_data is None,
-                  falls back to avg_entry as limit price.
+        pos_data: Unused — position is always re-fetched from Alpaca.
+                  Kept for API compatibility with main.py callers.
+        current_price: Current market price for fallback fill price.
 
     Returns dict with:
         - fill_price: float (actual fill price)

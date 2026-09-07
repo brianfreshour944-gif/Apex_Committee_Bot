@@ -43,7 +43,7 @@ from position_sizing import calculate_trade_size
 from orders import place_order, cancel_stale_orders
 from portfolio import normalize_symbol, close_position, close_all_positions, write_heartbeat
 from database import init_db, report_equity, record_realized_pnl
-from notifications import send_discord_alert
+from notifications import send_discord_alert, close_session
 from models import MarketSnapshot
 
 # ── Global state ───────────────────────────────────────────────
@@ -575,4 +575,7 @@ async def run():
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        asyncio.run(close_session())
