@@ -212,8 +212,10 @@ async def close_position(symbol: str, pos_data: dict | None = None,
                 return None
 
             fee = (filled_qty * fill_price) * FEE_RATE
+            slippage_pct = ((fill_price - current_price) / current_price) if current_price else None
 
-            logger.info(f"Closed: {symbol} qty={filled_qty:.6f} @ ${fill_price:.4f} | fee=${fee:.2f}")
+            slip_str = f" | slippage={slippage_pct*100:+.3f}%" if slippage_pct is not None else ""
+            logger.info(f"Closed: {symbol} qty={filled_qty:.6f} @ ${fill_price:.4f} | fee=${fee:.2f}{slip_str}")
 
             return {
                 "fill_price": fill_price,
@@ -221,6 +223,7 @@ async def close_position(symbol: str, pos_data: dict | None = None,
                 "fee": fee,
                 "order_id": order.id,
                 "trade_value": filled_qty * fill_price,
+                "slippage_pct": slippage_pct,
             }
 
         except APIError as e:
@@ -301,6 +304,7 @@ async def _close_position_full(
             return None
 
         fee = (filled_qty * fill_price) * FEE_RATE
+        slippage_pct = ((fill_price - current_price) / current_price) if current_price else None
         logger.info(f"Closed (full, dust-safe): {alpaca_sym} qty={filled_qty:.8f} @ ${fill_price:.4f} | fee=${fee:.2f}")
 
         return {
@@ -309,6 +313,7 @@ async def _close_position_full(
             "fee": fee,
             "order_id": order.id,
             "trade_value": filled_qty * fill_price,
+            "slippage_pct": slippage_pct,
         }
     except Exception as e:
         logger.error(f"Full close {alpaca_sym} failed: {type(e).__name__}: {e}")
@@ -346,6 +351,7 @@ async def _close_position_market(
             return None
 
         fee = (filled_qty * fill_price) * FEE_RATE
+        slippage_pct = ((fill_price - current_price) / current_price) if current_price else None
         logger.info(f"Closed (market): {alpaca_sym} qty={filled_qty:.6f} @ ${fill_price:.4f} | fee=${fee:.2f}")
 
         return {
@@ -354,6 +360,7 @@ async def _close_position_market(
             "fee": fee,
             "order_id": order.id,
             "trade_value": filled_qty * fill_price,
+            "slippage_pct": slippage_pct,
         }
     except Exception as e:
         logger.error(f"Market close {alpaca_sym} failed: {type(e).__name__}: {e}")

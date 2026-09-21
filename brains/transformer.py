@@ -18,7 +18,7 @@ import warnings
 # starved (measured: max block drops from 72.7ms to <5ms per cycle).
 torch.set_num_threads(1)
 
-from config import logger, MODEL_PATH, SCALER_PATH, SEQUENCE_LEN, DISCORD_WEBHOOK_URL
+from config import logger, MODEL_PATH, SCALER_PATH, SEQUENCE_LEN, DISCORD_WEBHOOK_URL, TRANSFORMER_CONFIDENCE_STRETCH
 from models import MarketSnapshot, AIDecision
 from feature_engineering import add_features, FEATURE_COLS
 
@@ -227,10 +227,10 @@ class TransformerBrain:
             # New: BUY >= 0.505, SELL <= 0.495 — almost no neutral zone
             if prob >= 0.505:
                 action     = "BUY"
-                confidence = min(0.95, 0.5 + (prob - 0.5) * 1.8)  # stretch confidence
+                confidence = min(0.95, 0.5 + (prob - 0.5) * TRANSFORMER_CONFIDENCE_STRETCH)
             elif prob <= 0.495:
                 action     = "SELL"
-                confidence = min(0.95, 0.5 + (0.5 - prob) * 1.8)
+                confidence = min(0.95, 0.5 + (0.5 - prob) * TRANSFORMER_CONFIDENCE_STRETCH)
             else:
                 action     = "HOLD"
                 confidence = abs(prob - 0.50) * 4  # still low

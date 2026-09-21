@@ -1,5 +1,6 @@
 
 import os
+import json
 import psycopg2
 from config import logger
 
@@ -68,6 +69,24 @@ def init_db():
                 qty NUMERIC, realized_pnl NUMERIC,
                 gross_pnl NUMERIC, fee_total NUMERIC,
                 order_id TEXT, timestamp TIMESTAMP DEFAULT NOW())""")
+
+            # ── Migration: enrich trades/realized_pnl with decision context ──
+            # Needed for signal calibration (predicted confidence vs actual
+            # outcome), regime-level performance breakdown, and per-brain
+            # ablation -- none of which were possible before because entry
+            # decisions were logged to Discord only, never persisted.
+            # ADD COLUMN IF NOT EXISTS is safe to re-run against an existing
+            # deployed DB (it's a no-op once the columns exist).
+            cur.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS confidence NUMERIC")
+            cur.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS regime TEXT")
+            cur.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS brain_votes TEXT")
+            cur.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS slippage_pct NUMERIC")
+
+            cur.execute("ALTER TABLE realized_pnl ADD COLUMN IF NOT EXISTS entry_confidence NUMERIC")
+            cur.execute("ALTER TABLE realized_pnl ADD COLUMN IF NOT EXISTS entry_regime TEXT")
+            cur.execute("ALTER TABLE realized_pnl ADD COLUMN IF NOT EXISTS exit_reason TEXT")
+            cur.execute("ALTER TABLE realized_pnl ADD COLUMN IF NOT EXISTS slippage_entry_pct NUMERIC")
+            cur.execute("ALTER TABLE realized_pnl ADD COLUMN IF NOT EXISTS slippage_exit_pct NUMERIC")
         conn.commit()
         logger.info("DB initialised")
     except Exception as e:
@@ -76,7 +95,8 @@ def init_db():
         _put_conn(conn)
 
 
-def record_trade(bot_name, symbol, side, qty, price, fill_price=None, fee=0.0, order_id=None):
+def record_trade(bot_name, symbol, side, qty, price, fill_price=None, fee=0.0, order_id=None,
+                  confidence=None, regime=None, brain_votes=None, slippage_pct=None):
     conn = None
     try:
         conn = _get_conn()
@@ -84,9 +104,13 @@ def record_trade(bot_name, symbol, side, qty, price, fill_price=None, fee=0.0, o
             return
         with conn.cursor() as cur:
             value = (price or 0) * qty
-            cur.execute("""INSERT INTO trades (bot_name,exchange,symbol,side,price,quantity,value,fee,fill_price,order_id,timestamp)
-                VALUES (%s,'Alpaca',%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
-                (bot_name, symbol, side, price or 0, qty, value, fee, fill_price, str(order_id) if order_id else None))
+            votes_json = json.dumps(brain_votes) if brain_votes is not None else None
+            cur.execute("""INSERT INTO trades
+                (bot_name,exchange,symbol,side,price,quantity,value,fee,fill_price,order_id,
+                 confidence,regime,brain_votes,slippage_pct,timestamp)
+                VALUES (%s,'Alpaca',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
+                (bot_name, symbol, side, price or 0, qty, value, fee, fill_price,
+                 str(order_id) if order_id else None, confidence, regime, votes_json, slippage_pct))
         conn.commit()
     except Exception as e:
         logger.error(f"DB trade failed: {e}")
@@ -95,7 +119,9 @@ def record_trade(bot_name, symbol, side, qty, price, fill_price=None, fee=0.0, o
 
 
 def record_realized_pnl(bot_name, symbol, side, entry_price, exit_price, qty,
-                        realized_pnl, gross_pnl, fee_total, order_id=None):
+                        realized_pnl, gross_pnl, fee_total, order_id=None,
+                        entry_confidence=None, entry_regime=None, exit_reason=None,
+                        slippage_entry_pct=None, slippage_exit_pct=None):
     conn = None
     try:
         conn = _get_conn()
@@ -104,10 +130,14 @@ def record_realized_pnl(bot_name, symbol, side, entry_price, exit_price, qty,
         with conn.cursor() as cur:
             cur.execute("""INSERT INTO realized_pnl
                 (bot_name, symbol, side, entry_price, exit_price, qty,
-                 realized_pnl, gross_pnl, fee_total, order_id, timestamp)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
+                 realized_pnl, gross_pnl, fee_total, order_id,
+                 entry_confidence, entry_regime, exit_reason,
+                 slippage_entry_pct, slippage_exit_pct, timestamp)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
                 (bot_name, symbol, side, entry_price, exit_price, qty,
-                 realized_pnl, gross_pnl, fee_total, str(order_id) if order_id else None))
+                 realized_pnl, gross_pnl, fee_total, str(order_id) if order_id else None,
+                 entry_confidence, entry_regime, exit_reason,
+                 slippage_entry_pct, slippage_exit_pct))
         conn.commit()
     except Exception as e:
         logger.error(f"DB realized PnL failed: {e}")

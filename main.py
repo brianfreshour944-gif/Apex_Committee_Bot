@@ -30,7 +30,8 @@ from config import (
     STOP_LOSS_PCT, TAKE_PROFIT_PCT, TRAILING_STOP_PCT, MAX_HOLD_HOURS,
     COOLDOWN_SECONDS_BUY, SLEEP_PER_LOOP,
     STATE_FILE_PATH, MIN_BID_ASK_RATIO,
-    FEE_RATE,
+    FEE_RATE, MAX_TOTAL_EXPOSURE_PCT,
+    STOP_LOSS_ATR_THRESHOLD, STOP_LOSS_ATR_MAX_MULT,
 )
 from data_feed import get_ohlcv, compute_indicators, get_account_state, get_all_positions, get_orderbook_ratio
 from regime import classify_regime
@@ -51,6 +52,8 @@ entry_times:   dict  = {}    # {alpaca_sym: datetime}
 entry_prices:  dict  = {}    # {alpaca_sym: float}
 peak_prices:   dict  = {}    # {alpaca_sym: float}  — for trailing stop
 cooldowns:     dict  = {}    # {alpaca_sym: float}  — timestamp
+entry_confidence: dict = {}  # {alpaca_sym: float}  — committee confidence at entry, for calibration analysis
+entry_regime:     dict = {}  # {alpaca_sym: str}     — regime at entry, for regime-performance analysis
 start_equity:  float | None = None
 
 # Lock for protecting shared state mutations and save_state
@@ -75,6 +78,8 @@ async def save_state():
                 "entry_prices": entry_prices,
                 "peak_prices":  peak_prices,
                 "cooldowns":    cooldowns,
+                "entry_confidence": entry_confidence,
+                "entry_regime":     entry_regime,
             }
             tmp_path = f"{STATE_FILE_PATH}.tmp"
             def _write():
@@ -98,6 +103,8 @@ def load_state():
         entry_prices.update(data.get("entry_prices", {}))
         peak_prices.update(data.get("peak_prices", {}))
         cooldowns.update(data.get("cooldowns", {}))
+        entry_confidence.update(data.get("entry_confidence", {}))
+        entry_regime.update(data.get("entry_regime", {}))
         logger.info("[DISK] Restored persistent state from disk")
     except Exception as e:
         logger.warning(f"State load failed: {e}")
@@ -137,8 +144,10 @@ async def sync_state_with_alpaca():
             entry_prices.pop(alpaca_sym, None)
             peak_prices.pop(alpaca_sym, None)
             cooldowns.pop(alpaca_sym, None)
+            entry_confidence.pop(alpaca_sym, None)
+            entry_regime.pop(alpaca_sym, None)
             logger.info(f"[SYNC] Removed stale local state: {alpaca_sym}")
-        
+
         await save_state()
     except Exception as e:
         logger.warning(f"State sync failed: {e}")
@@ -231,6 +240,8 @@ async def run():
                     entry_prices.pop(alpaca_sym, None)
                     peak_prices.pop(alpaca_sym, None)
                     cooldowns.pop(alpaca_sym, None)
+                    entry_confidence.pop(alpaca_sym, None)
+                    entry_regime.pop(alpaca_sym, None)
                     logger.info(f"[SYNC] Removed stale local state: {alpaca_sym}")
 
             # ── Parallel OHLCV fetch ─────────────────────────────────────────
@@ -370,15 +381,52 @@ async def run():
                         elif held_h >= 1.0:
                             effective_stop *= 0.75  # Tighten by 25% after 1 hour
 
+                        # Volatility-aware widening: sentinel already caps position
+                        # SIZE once ATR% exceeds STOP_LOSS_ATR_THRESHOLD (elevated
+                        # volatility), but until now nothing widened the STOP to
+                        # match -- a flat stop in a regime already flagged as
+                        # unusually volatile is the most likely way to get stopped
+                        # out by noise rather than a real reversal. Scales with how
+                        # far ATR exceeds the threshold, capped at STOP_LOSS_ATR_MAX_MULT.
+                        atr_pct = indicators.get("atr_pct", 0.0)
+                        if atr_pct > STOP_LOSS_ATR_THRESHOLD:
+                            atr_mult = min(STOP_LOSS_ATR_MAX_MULT, atr_pct / STOP_LOSS_ATR_THRESHOLD)
+                            effective_stop *= atr_mult
+
                         exit_reason = None
                         if pnl_pct <= -effective_stop:
-                            exit_reason = f"Stop loss {pnl_pct*100:.1f}% (decayed threshold: -{effective_stop*100:.2f}%)"
+                            exit_reason = f"Stop loss {pnl_pct*100:.1f}% (decayed/vol-adjusted threshold: -{effective_stop*100:.2f}%)"
                         elif pnl_pct >= TAKE_PROFIT_PCT:
                             exit_reason = f"Take profit +{pnl_pct*100:.1f}%"
                         elif price < trailing_stop_price and pnl_pct > 0:
                             exit_reason = f"Trailing stop (peak ${peak_price:.4f} -> ${trailing_stop_price:.4f})"
                         elif held_h >= MAX_HOLD_HOURS:
                             exit_reason = f"Max hold {held_h:.1f}h | PnL {pnl_pct*100:+.1f}%"
+
+                        # Committee SELL override: the 3-brain committee's SELL
+                        # vote was previously never acted on -- all exits were
+                        # purely mechanical, so momentum's highest-conviction
+                        # signal (UPTREND->DISTRIBUTION top detection) was logged
+                        # and discarded. This runs the committee only as a
+                        # SECONDARY check, after the harder-coded risk exits above
+                        # have already had a chance to fire, so mechanical risk
+                        # control remains primary and this only adds an additional
+                        # exit trigger rather than replacing any existing one.
+                        if exit_reason is None:
+                            try:
+                                exit_decisions = list(await asyncio.gather(
+                                    asyncio.to_thread(transformer_brain.decide, snapshot),
+                                    asyncio.to_thread(quant_brain.decide, snapshot),
+                                    asyncio.to_thread(momentum_brain.decide, snapshot),
+                                ))
+                                exit_committee = run_committee(snapshot, exit_decisions)
+                                if exit_committee.action == "SELL":
+                                    exit_reason = (
+                                        f"Committee SELL override | conf={exit_committee.confidence:.3f} "
+                                        f"| regime={exit_committee.regime}"
+                                    )
+                            except Exception as committee_exit_err:
+                                logger.warning(f"Committee exit check failed for {symbol}: {committee_exit_err}")
 
                         if exit_reason:
                             logger.info(f"EXIT {symbol}: {exit_reason}")
@@ -394,13 +442,23 @@ async def run():
                                 total_fee = buy_fee + exit_fee
                                 realized_pnl = gross_pnl - total_fee
 
-                                # Record realized PnL in database
+                                # Record realized PnL in database, tagged with the
+                                # decision context from entry (confidence/regime) and
+                                # exit (reason, slippage vs. the pre-order price
+                                # estimate) -- required to ever answer "is 90%-
+                                # confidence outperforming 60%-confidence" or "which
+                                # regime loses money" instead of guessing.
                                 try:
                                     await asyncio.to_thread(
                                         record_realized_pnl, BOT_NAME, alpaca_sym, "SELL",
                                         avg_entry, fill_price, exit_qty,
                                         realized_pnl, gross_pnl, total_fee,
-                                        exit_result.get("order_id")
+                                        exit_result.get("order_id"),
+                                        entry_confidence.get(alpaca_sym),
+                                        entry_regime.get(alpaca_sym),
+                                        exit_reason,
+                                        None,  # slippage_entry_pct: not carried forward from BUY today
+                                        exit_result.get("slippage_pct"),
                                     )
                                 except Exception:
                                     pass
@@ -423,6 +481,8 @@ async def run():
                                     entry_times.pop(alpaca_sym, None)
                                     entry_prices.pop(alpaca_sym, None)
                                     peak_prices.pop(alpaca_sym, None)
+                                    entry_confidence.pop(alpaca_sym, None)
+                                    entry_regime.pop(alpaca_sym, None)
                                 await save_state()
                                 try:
                                     await send_discord_alert(
@@ -512,13 +572,38 @@ async def run():
                         logger.warning(f"Insufficient BP (${buying_power:.2f}) for ${trade_value:.2f}")
                         continue
 
+                    # ── Aggregate exposure cap ──────────────────────────────────
+                    # MAX_OPEN_POSITIONS bounds position COUNT and
+                    # MAX_SINGLE_TRADE_USD bounds per-trade size, but neither
+                    # bounds TOTAL dollar exposure -- 3 positions at $5,000 each
+                    # was previously allowed regardless of equity, and BTC/ETH/SOL
+                    # are typically highly correlated in crypto selloffs, so 3
+                    # "diversified" positions can behave like one large bet.
+                    # (computed_equity - cash) is the total current position
+                    # value, already computed earlier this cycle for the equity
+                    # verification check -- reused here rather than re-summed.
+                    current_exposure = max(0.0, computed_equity - cash)
+                    if equity > 0 and (current_exposure + trade_value) / equity > MAX_TOTAL_EXPOSURE_PCT:
+                        logger.warning(
+                            f"🚫 Exposure cap: current=${current_exposure:,.2f} + new=${trade_value:,.2f} "
+                            f"would exceed {MAX_TOTAL_EXPOSURE_PCT:.0%} of equity (${equity:,.2f}) — skipping {symbol}"
+                        )
+                        continue
+
                     qty = trade_value / price
                     logger.info(
                         f"BUY {symbol} ${trade_value:.2f} @ ${price:.4f} "
                         f"| Committee: {committee.confidence:.3f} | Regime: {committee.regime}"
                     )
 
-                    success_result = await place_order(symbol, OrderSide.BUY, qty, price)
+                    brain_votes = [
+                        {"brain": d.brain, "action": d.action, "confidence": d.confidence, "failed": d.failed}
+                        for d in decisions
+                    ]
+                    success_result = await place_order(
+                        symbol, OrderSide.BUY, qty, price,
+                        confidence=committee.confidence, regime=committee.regime, brain_votes=brain_votes,
+                    )
                     if success_result and success_result.get("success"):
                         fill_price = success_result.get("fill_price") or price
                         filled_qty = success_result.get("qty", qty)
@@ -532,6 +617,8 @@ async def run():
                             entry_prices[alpaca_sym] = fill_price
                             peak_prices[alpaca_sym]  = fill_price
                             cooldowns[alpaca_sym]    = now + COOLDOWN_SECONDS_BUY
+                            entry_confidence[alpaca_sym] = committee.confidence
+                            entry_regime[alpaca_sym]     = committee.regime
                         await save_state()
 
                         # Format vote breakdown for Discord

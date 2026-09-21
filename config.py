@@ -38,8 +38,29 @@ class Settings(BaseSettings):
     sentinel_max_atr_pct: float = 6.0
     sentinel_max_vol_mult: float = 4.0
     max_consecutive_losses: int = 4
-    
+
     max_drawdown_stop: float = -0.10
+
+    # Aggregate exposure cap (sum of all open position values as % of equity).
+    # Separate from MAX_OPEN_POSITIONS x MAX_SINGLE_TRADE_USD, which bounds
+    # position COUNT and per-trade size but not total dollar exposure --
+    # 3 positions at $5,000 each is allowed today with no check against equity.
+    max_total_exposure_pct: float = 0.30
+
+    # Stop-loss widens (multiplicatively) once ATR% exceeds this threshold,
+    # up to stop_loss_atr_max_mult. Mirrors the threshold sentinel already
+    # uses to cap position SIZE (sentinel.py: atr_pct > 3.0) -- but until now
+    # nothing widened the STOP to match the same "this is unusually volatile"
+    # judgment, so normal noise in an elevated-vol regime could stop out a
+    # trade that a vol-adjusted stop would have let ride.
+    stop_loss_atr_threshold: float = 3.0
+    stop_loss_atr_max_mult: float = 1.5
+
+    # Transformer brain: raw sigmoid probability is stretched by this factor
+    # before being reported as "confidence" (e.g. prob=0.55 -> confidence=0.59).
+    # Pulled out to config so it can be tuned once real calibration data
+    # (confidence vs actual outcome) exists -- see database.py trade logging.
+    transformer_confidence_stretch: float = 1.8
     
     min_bid_ask_ratio: float = 0.65
     state_file_path: str = "committee_bot_state.json"
@@ -105,6 +126,10 @@ SENTINEL_MAX_ATR_PCT  = settings.sentinel_max_atr_pct
 SENTINEL_MAX_VOL_MULT = settings.sentinel_max_vol_mult
 MAX_CONSECUTIVE_LOSSES = settings.max_consecutive_losses
 MAX_DRAWDOWN_STOP = settings.max_drawdown_stop
+MAX_TOTAL_EXPOSURE_PCT = settings.max_total_exposure_pct
+STOP_LOSS_ATR_THRESHOLD = settings.stop_loss_atr_threshold
+STOP_LOSS_ATR_MAX_MULT = settings.stop_loss_atr_max_mult
+TRANSFORMER_CONFIDENCE_STRETCH = settings.transformer_confidence_stretch
 MIN_BID_ASK_RATIO  = settings.min_bid_ask_ratio
 STATE_FILE_PATH    = settings.state_file_path
 SLEEP_PER_LOOP = settings.sleep_per_loop

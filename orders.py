@@ -60,10 +60,17 @@ def _sanitize_price(price: float) -> float:
 
 
 async def place_order(
-    symbol: str, side: OrderSide, qty: float, price: float = None
+    symbol: str, side: OrderSide, qty: float, price: float = None,
+    confidence: float = None, regime: str = None, brain_votes: list = None,
 ) -> dict | None:
     """
     Places an order and returns a dict with execution details.
+
+    Args:
+        confidence, regime, brain_votes: committee decision context at the
+            time this order was placed. Purely for logging/analysis (signal
+            calibration, regime performance, brain ablation) -- has no effect
+            on execution.
 
     Returns dict with:
         - success: bool
@@ -71,6 +78,7 @@ async def place_order(
         - fill_price: float or None (actual fill price)
         - fee: float (estimated fee)
         - order_id: str
+        - slippage_pct: float or None -- (fill_price - price) / price
     Returns None on failure.
     """
     from alpaca.common.exceptions import APIError
@@ -126,11 +134,16 @@ async def place_order(
                 return None
 
             fee = (filled_qty * fill_price) * FEE_RATE
+            slippage_pct = ((fill_price - price) / price) if price else None
 
-            # Record with actual fill price and fee
-            await asyncio.to_thread(record_trade, BOT_NAME, symbol, side.value, filled_qty,
-                                    fill_price, fill_price, fee, order.id)
-            logger.info(f"{'BUY' if side == OrderSide.BUY else 'SELL'} {symbol} qty={filled_qty:.6f} @ ${fill_price:.4f} | fee=${fee:.2f}")
+            # Record with actual fill price, fee, and decision context
+            await asyncio.to_thread(
+                record_trade, BOT_NAME, symbol, side.value, filled_qty,
+                fill_price, fill_price, fee, order.id,
+                confidence, regime, brain_votes, slippage_pct,
+            )
+            slip_str = f" | slippage={slippage_pct*100:+.3f}%" if slippage_pct is not None else ""
+            logger.info(f"{'BUY' if side == OrderSide.BUY else 'SELL'} {symbol} qty={filled_qty:.6f} @ ${fill_price:.4f} | fee=${fee:.2f}{slip_str}")
 
             return {
                 "success": True,
@@ -139,6 +152,7 @@ async def place_order(
                 "fee": fee,
                 "order_id": order.id,
                 "trade_value": filled_qty * fill_price,  # actual dollar value filled
+                "slippage_pct": slippage_pct,
             }
 
         except APIError as e:
