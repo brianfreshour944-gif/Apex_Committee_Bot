@@ -321,7 +321,7 @@ async def run():
                     regime     = classify_regime(df, indicators)
                     price      = indicators["price"]
 
-                    if price <= 0:
+                    if price is None or (isinstance(price, float) and __import__("math").isnan(price)) or price <= 0:
                         continue
 
                     logger.info(
@@ -357,7 +357,7 @@ async def run():
                                 peak_price = price
                                 peak_updated = True
 
-                            pnl_pct    = (price - avg_entry) / avg_entry if avg_entry > 0 else 0.0
+                            pnl_pct    = (price - avg_entry) / avg_entry if avg_entry is not None and not __import__("math").isnan(avg_entry) and avg_entry > 0 else 0.0
                             entry_dt   = entry_times.get(alpaca_sym, datetime.now(timezone.utc))
                         # FIX (crash recovery): persist the new peak immediately.
                         # peak_prices updates were only saved at BUY/EXIT, so a
