@@ -74,8 +74,8 @@ class StressTester:
         # Take profit (main.py:376)
         elif pnl_pct >= TAKE_PROFIT_PCT:
             exit_reason = f"Take profit +{pnl_pct*100:.1f}%"
-        # Trailing stop (main.py:378) — only in profit
-        elif current_price < trailing_stop_price and pnl_pct > 0:
+        # Trailing stop (main.py:401) -- armed once peak exceeds entry
+        elif current_price < trailing_stop_price and peak_price > avg_entry:
             exit_reason = f"Trailing stop (peak ${peak_price:.4f} -> ${trailing_stop_price:.4f})"
         # Max hold (main.py:380)
         elif held_h >= MAX_HOLD_HOURS:
@@ -150,7 +150,7 @@ class StressTester:
         print("\n--- Safety Property Checks ---")
 
         # Check 1: Does 10% drop trigger exit?
-        ten_pct = [r for r in self.results if r["drop_pct"] >= 10.0 and r["scenario"].startswith("Drop test")]
+        ten_pct = [r for r in self.results if r["drop_pct"] is not None and r["drop_pct"] >= 10.0 and r["scenario"].startswith("Drop test")]
         if ten_pct:
             all_exited = all(r["should_exit"] for r in ten_pct)
             print(f"  {'PASS' if all_exited else 'FAIL'}: 10%+ drop triggers exit on all positions")
@@ -165,7 +165,7 @@ class StressTester:
         trail_tests = [r for r in self.results if "trailing" in r["scenario"].lower()]
         if trail_tests:
             all_correct = all(
-                (r["should_exit"] == (r["price"] < r["trailing_stop_price"] and r["pnl_pct"] > 0))
+                (r["should_exit"] == (r["price"] < r["trailing_stop_price"] and r["peak_price"] > r["entry_price"]))
                 for r in trail_tests
             )
             print(f"  {'PASS' if all_correct else 'FAIL'}: Trailing stop logic is correct for profit-taking exits")
@@ -214,10 +214,33 @@ def test_trailing_stop_scenarios():
     tester.test_scenario("Trailing stop: ran to +8%, pulling back 5%",
                           drop_pct=None, entry_price=50000, peak_price=54000,
                           entry_time_hours_ago=0.5, current_price_override=51300)
+    # REGRESSION (2026-09-21 ETH live trade): ran up modestly (+0.07%, peak
+    # 53036), then dumped BELOW entry (-2.4%). Old code gated the trail on
+    # pnl_pct > 0, so it logged HOLDING with price under its own trail line
+    # and rode toward the -4% stop. New code (armed on peak > entry) exits
+    # at the trail instead of giving back all gains.
+    tester.test_scenario("Trailing stop: ran to +3%, dumping below entry (regression: give-back)",
+                          drop_pct=None, entry_price=50000, peak_price=51500,
+                          entry_time_hours_ago=1.0, current_price_override=48800)
+    # Fresh entry that NEVER went green: peak == entry, trail must stay
+    # disarmed so the position rides to the -4% stop (not a premature -2%
+    # trail exit). Guards against arming the trail from the fill price.
+    tester.test_scenario("Trailing stop: fresh entry never green, -3% dip (trail must NOT fire)",
+                          drop_pct=None, entry_price=50000, peak_price=50000,
+                          entry_time_hours_ago=0.5, current_price_override=48500)
+    # Trail armed by a barely-green peak (+0.1% over entry): once price falls
+    # 2% off that peak (below $49,049 here), the trail exits even though PnL
+    # is negative -- gains are protected all the way down, not just while green.
+    tester.test_scenario("Trailing stop: peak barely above entry, price under trail (exits)",
+                          drop_pct=None, entry_price=50000, peak_price=50050,
+                          entry_time_hours_ago=1.0, current_price_override=48900)
 
     print("--- Trailing Stop Scenarios ---")
     print(f"  (Stop loss = {STOP_LOSS_PCT*100:.0f}% | Trailing stop = {TRAILING_STOP_PCT*100:.0f}% | Take profit = {TAKE_PROFIT_PCT*100:.0f}%)")
     tester.print_all()
+    # print_summary() runs Safety Check 3 (trailing-stop correctness); without
+    # this call that check never executed against the trailing scenarios.
+    tester.print_summary()
     return tester
 
 

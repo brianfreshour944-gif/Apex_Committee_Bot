@@ -54,7 +54,13 @@ class Settings(BaseSettings):
     # judgment, so normal noise in an elevated-vol regime could stop out a
     # trade that a vol-adjusted stop would have let ride.
     stop_loss_atr_threshold: float = 3.0
-    stop_loss_atr_max_mult: float = 1.5
+    # 1.25 caps the effective stop at -5% (fresh) / -2.5% (after 2h decay).
+    # Previously 1.5 (-6% / -3%), which let the stop stretch widest exactly
+    # when protection matters most -- flash crashes spike ATR% past the
+    # threshold, so the cap was reachable in precisely the drops it should
+    # not widen into. Tighten further at your own risk; below ~1.2 the stop
+    # stops tracking volatility at all.
+    stop_loss_atr_max_mult: float = 1.25
 
     # Transformer brain: raw sigmoid probability is stretched by this factor
     # before being reported as "confidence" (e.g. prob=0.55 -> confidence=0.59).

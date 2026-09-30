@@ -398,7 +398,18 @@ async def run():
                             exit_reason = f"Stop loss {pnl_pct*100:.1f}% (decayed/vol-adjusted threshold: -{effective_stop*100:.2f}%)"
                         elif pnl_pct >= TAKE_PROFIT_PCT:
                             exit_reason = f"Take profit +{pnl_pct*100:.1f}%"
-                        elif price < trailing_stop_price and pnl_pct > 0:
+                        # Trail is armed only once the position has made a new
+                        # high above entry (peak starts AT the fill price on
+                        # BUY, so without this arming check a never-green
+                        # position would trail-exit at -2% instead of riding
+                        # to the -4% stop). Once armed, the trail protects
+                        # gains even after price falls back below entry --
+                        # previously the `pnl_pct > 0` gate deactivated the
+                        # trail exactly when it was needed most, letting a
+                        # +3% run-up round-trip all the way to the hard stop
+                        # (ETH 2026-09-21: trail $2683.78, price $2670.90
+                        # below it, yet logged HOLDING because PnL was -2.4%).
+                        elif price < trailing_stop_price and peak_price > avg_entry:
                             exit_reason = f"Trailing stop (peak ${peak_price:.4f} -> ${trailing_stop_price:.4f})"
                         elif held_h >= MAX_HOLD_HOURS:
                             exit_reason = f"Max hold {held_h:.1f}h | PnL {pnl_pct*100:+.1f}%"
