@@ -1,4 +1,4 @@
-# data_feed.py — OHLCV fetch + all indicator computation for the committee.
+﻿# data_feed.py — OHLCV fetch + all indicator computation for the committee.
 
 import asyncio
 import numpy as np
@@ -204,11 +204,18 @@ async def get_all_positions() -> dict | None:
     main.py treat held symbols as flat, allowing duplicate BUYs on top of
     existing positions, and blocked exits for the whole cycle).
     """
+    from portfolio import normalize_symbol
     from config import trading_client
     try:
         positions = await asyncio.to_thread(trading_client.get_all_positions)
+        # Normalize keys to slash-less form ("BTCUSD"): Alpaca reports crypto
+        # position symbols without the slash while config/state use "BTC/USD".
+        # main.py keys ALL local state by normalize_symbol(symbol), so keys
+        # MUST match or entry_times/entry_prices/peak_prices lookups miss
+        # (previously: restart re-keyed state -> entry_dt defaulted to now ->
+        # held_h ~ 0 forever -> MAX_HOLD exit could never fire).
         return {
-            p.symbol: {
+            normalize_symbol(p.symbol): {
                 "qty":       float(p.qty),
                 "avg_entry": float(p.avg_entry_price),
                 "market_value": float(p.market_value),

@@ -28,6 +28,23 @@ logged HOLDING because PnL was -2.40%. Fix: arm the trail on
 because the cap was reachable only when ATR% ≥ 4.5%, i.e. exactly during
 flash crashes when widening is most harmful.
 
+## Known bug fixed 2026-09-29 (symbol key mismatch — 7-day no-trade freeze)
+Alpaca reports crypto positions slash-less (`BTCUSD`) while bot state used
+`BTC/USD`. On restart reconciliation every lookup missed, so `entry_times`
+drifted/re-added positions as fresh and the MAX_HOLD (8h) exit never fired —
+BTC rode a position for 7+ days. Fix in `main.py` (`sync_state_with_alpaca()`)
++ `data_feed.py`: normalize every symbol with `normalize_symbol()` before any
+state dict access; migration preserves the original entry time. Regression:
+`tests/test_key_mismatch.py` (6 scenarios). All 5 suites exit 0 as of this fix.
+
+## Test infra notes
+- Tests import `config` → pydantic Settings REQUIRES `APCA_API_KEY_ID` /
+  `APCA_API_SECRET_KEY` present (any placeholder works in tests; values are
+  never used for network calls). Client init in imports is harmless.
+- `test_committee.py` / `test_features.py` / `test_regime.py` now have
+  `__main__` runner blocks (they were previously silent no-ops — exit 0
+  without executing any assertions). Keep runners when editing these files.
+
 ## Gotchas
 - `tests/test_stress_market_drops.py::print_summary()` is called per-suite; it assumes `drop_pct` may be None (trailing scenarios) — keep the None guard.
 - Test-scenario labels must match actual price geometry (a "pullback to entry" scenario with price above its trail line correctly HOLDs).

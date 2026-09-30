@@ -65,3 +65,9 @@ def test_committee_scoring_legit_zero_confidence_vote_is_not_excluded():
     result = run_committee(snapshot, decisions)
     # BUY score = 0.58, below 0.60 threshold → must be SKIP
     assert result.action == "SKIP"
+
+
+if __name__ == "__main__":
+    test_committee_scoring()
+    test_committee_scoring_legit_zero_confidence_vote_is_not_excluded()
+    print("test_committee: all tests passed")

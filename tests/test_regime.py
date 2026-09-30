@@ -78,3 +78,12 @@ def test_classify_regime_defaults_to_dump_on_missing_indicator():
     indicators are malformed/missing."""
     df = _df([100, 101, 102, 103, 104])
     assert classify_regime(df, {}) == "DUMP"
+
+
+if __name__ == "__main__":
+    test_classify_regime_dump()
+    test_classify_regime_accumulation()
+    test_classify_regime_uptrend()
+    test_classify_regime_distribution()
+    test_classify_regime_defaults_to_dump_on_missing_indicator()
+    print("test_regime: all tests passed")

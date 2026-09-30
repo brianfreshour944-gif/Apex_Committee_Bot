@@ -127,6 +127,42 @@ async def sync_state_with_alpaca():
             logger.warning("[SYNC] Positions fetch failed at startup -- keeping local state")
             return
 
+        # Alpaca reports crypto position symbols WITHOUT the slash ("BTCUSD")
+        # while pre-restart state (saved at BUY time) is keyed "BTC/USD". Key
+        # migration: on every restart the legacy keys were treated as stale
+        # and DESTROYED, and the position was re-added with entry_times = NOW.
+        # The exit logic then looked up entry_dt under the raw symbol,
+        # missed, defaulted held_h to ~0, and the MAX_HOLD exit could never
+        # fire -- positions were held for days (observed live: BTC/ETH stuck
+        # at -2.5% for 7+ days with no exit). MIGRATE legacy keys instead,
+        # preserving entry metadata so the true hold duration (and thus the
+        # max-hold exit) survives a restart.
+        legacy_map = {}
+        for key in list(entry_times.keys()):
+            norm = normalize_symbol(key)
+            if norm != key:
+                legacy_map[key] = norm
+        for old_key, new_key in legacy_map.items():
+            if new_key in current_positions:
+                if new_key not in entry_prices and old_key in entry_prices:
+                    entry_prices[new_key] = entry_prices.pop(old_key)
+                if new_key not in peak_prices and old_key in peak_prices:
+                    peak_prices[new_key] = peak_prices.pop(old_key)
+                if new_key not in entry_times:
+                    entry_times[new_key] = entry_times.pop(old_key)
+                else:
+                    entry_times.pop(old_key)
+                if new_key not in entry_confidence and old_key in entry_confidence:
+                    entry_confidence[new_key] = entry_confidence.pop(old_key)
+                if new_key not in entry_regime and old_key in entry_regime:
+                    entry_regime[new_key] = entry_regime.pop(old_key)
+                if new_key not in cooldowns and old_key in cooldowns:
+                    cooldowns[new_key] = cooldowns.pop(old_key)
+                logger.info(
+                    f"[SYNC] Migrated state key {old_key!r} -> {new_key!r} "
+                    f"(entry time preserved: {entry_times[new_key].isoformat()})"
+                )
+
         alpaca_symbols = set(current_positions.keys())
         local_symbols = set(entry_times.keys())
         
@@ -227,6 +263,34 @@ async def run():
             # entry_times against it every cycle so the position-count gate
             # never blocks/allows trades based on stale local state.
             if positions_ok:
+                # Alpaca reports crypto symbols WITHOUT the slash ("BTCUSD")
+                # while pre-restart state is keyed "BTC/USD". Migrate legacy
+                # keys BEFORE stale-removal so the per-cycle reconciliation
+                # never destroys entry metadata after a restart (otherwise
+                # entry_dt defaults to now and MAX_HOLD can never fire).
+                legacy_map = {}
+                for key in list(entry_times.keys()):
+                    norm = normalize_symbol(key)
+                    if norm != key:
+                        legacy_map[key] = norm
+                for old_key, new_key in legacy_map.items():
+                    if new_key in current_positions:
+                        if new_key not in entry_prices and old_key in entry_prices:
+                            entry_prices[new_key] = entry_prices.pop(old_key)
+                        if new_key not in peak_prices and old_key in peak_prices:
+                            peak_prices[new_key] = peak_prices.pop(old_key)
+                        if new_key not in entry_times:
+                            entry_times[new_key] = entry_times.pop(old_key)
+                        else:
+                            entry_times.pop(old_key)
+                        if new_key not in entry_confidence and old_key in entry_confidence:
+                            entry_confidence[new_key] = entry_confidence.pop(old_key)
+                        if new_key not in entry_regime and old_key in entry_regime:
+                            entry_regime[new_key] = entry_regime.pop(old_key)
+                        if new_key not in cooldowns and old_key in cooldowns:
+                            cooldowns[new_key] = cooldowns.pop(old_key)
+                        logger.info(f"[SYNC] Migrated state key {old_key!r} -> {new_key!r}")
+
                 alpaca_symbols = set(current_positions.keys())
                 local_symbols = set(entry_times.keys())
                 for alpaca_sym, pdata in current_positions.items():
@@ -311,8 +375,13 @@ async def run():
             # ── Per-symbol loop ────────────────────────────────────────────
             for symbol, df, indicators in zip(SYMBOLS, ohlcv_data, indicator_results):
                 try:
-                    alpaca_sym = symbol
-                    pos_data   = current_positions.get(alpaca_sym) or current_positions.get(normalize_symbol(symbol))
+                    # Canonical key: all state dicts (entry_times, entry_prices,
+                    # peak_prices, cooldowns, ...) are keyed slash-less
+                    # ("BTCUSD"), matching get_all_positions() output. Config
+                    # uses "BTC/USD"; without this normalization every state
+                    # lookup in the exit block missed and held_h defaulted to 0.
+                    alpaca_sym = normalize_symbol(symbol)
+                    pos_data   = current_positions.get(alpaca_sym)
                     has_pos    = pos_data is not None and pos_data["qty"] > 0
 
                     if df is None or indicators is None:

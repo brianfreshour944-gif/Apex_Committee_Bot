@@ -37,3 +37,8 @@ def test_compute_indicators():
     # Check bounds
     assert 0 <= indicators["rsi"] <= 100
     assert indicators["price"] > 0
+
+
+if __name__ == "__main__":
+    test_compute_indicators()
+    print("test_features: all tests passed")
