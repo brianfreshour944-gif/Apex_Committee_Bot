@@ -204,7 +204,7 @@ async def get_all_positions() -> dict | None:
     main.py treat held symbols as flat, allowing duplicate BUYs on top of
     existing positions, and blocked exits for the whole cycle).
     """
-    from portfolio import normalize_symbol
+    from portfolio import normalize_symbol, is_effectively_flat
     from config import trading_client
     try:
         positions = await asyncio.to_thread(trading_client.get_all_positions)
@@ -214,6 +214,14 @@ async def get_all_positions() -> dict | None:
         # MUST match or entry_times/entry_prices/peak_prices lookups miss
         # (previously: restart re-keyed state -> entry_dt defaulted to now ->
         # held_h ~ 0 forever -> MAX_HOLD exit could never fire).
+        #
+        # Skip effectively-flat positions (qty 0 or sub-dust < 1e-8). Alpaca
+        # can list a position with qty == 0 (or unsellable residue) after a
+        # fill; if it were returned, main.py's has_pos gate (qty > 0) would
+        # pass, an EXIT would fire every cycle, and close_position would fail
+        # forever with 40310000 (live 2026-10-06: BTC/ETH exit loop). Omitting
+        # it makes the position look gone: exits are skipped and the per-cycle
+        # reconciliation clears the stale local state.
         return {
             normalize_symbol(p.symbol): {
                 "qty":       float(p.qty),
@@ -221,6 +229,7 @@ async def get_all_positions() -> dict | None:
                 "market_value": float(p.market_value),
             }
             for p in positions
+            if not is_effectively_flat(p.qty)
         }
     except Exception as e:
         logger.error(f"Positions fetch failed: {e}")

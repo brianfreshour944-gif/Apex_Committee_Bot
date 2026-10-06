@@ -37,6 +37,37 @@ BTC rode a position for 7+ days. Fix in `main.py` (`sync_state_with_alpaca()`)
 state dict access; migration preserves the original entry time. Regression:
 `tests/test_key_mismatch.py` (6 scenarios). All 5 suites exit 0 as of this fix.
 
+## Known bug fixed 2026-10-06 (phantom position — infinite EXIT loop)
+Live 03:31–04:54 UTC: BTC/USD and ETH/USD each logged
+`EXIT ... Max hold / Trailing stop` then
+`Close ...: sellable qty=0 (dust or locked, qty_total=0.00000000, ...)` and
+`Full close BTCUSD failed: APIError code 40310000 "order qty must be >=
+minimal qty of order 0.000000002"` every 60s, forever; `Positions: 2/3` never
+dropped. Root cause: the cycle's position fetch returned a truthy-but-stale
+qty (Alpaca crypto qty is a `Decimal`; sub-dust residue like `1.4e-9` is
+`> 0` yet prints as `0.00000000`), so main.py's `qty > 0` gate fired an EXIT.
+The exit re-fetched, got qty 0/dust, floored the sellable qty to 0, fell back
+to the full-position close API, and Alpaca rejected it. The failure returned
+`None`, so main.py never cleared local state and retried forever.
+
+Fix (dust is "flat" everywhere):
+- `portfolio.is_effectively_flat(qty)` / `DUST_QTY = 1e-8` — qty 0 or sub-dust
+  is treated as no position.
+- `close_position()` returns `{"already_flat": True}` (no order placed) for a
+  flat position instead of calling the doomed close API.
+- `_close_position_full()` maps the `40310000` "minimal qty" error (and a
+  zero-fill response) to `{"already_flat": True}` via
+  `_is_nothing_to_close_error()`.
+- `data_feed.get_all_positions()` omits flat positions so they look gone.
+- `main.py` exit block clears local state on the `already_flat` sentinel via
+  the new `clear_position_state()` helper (also reused by the normal exit
+  path), breaking the loop.
+
+Regression: `tests/test_phantom_exit_loop.py` (18 checks; fails on pre-fix
+code). All 6 suites exit 0 as of this fix. NOTE: `close_position()` returning
+a dict with `already_flat` is distinct from `None` (a real close failure) —
+do not collapse the two.
+
 ## Test infra notes
 - Tests import `config` → pydantic Settings REQUIRES `APCA_API_KEY_ID` /
   `APCA_API_SECRET_KEY` present (any placeholder works in tests; values are

@@ -23,6 +23,28 @@ def normalize_symbol(symbol: str) -> str:
     return symbol.replace("/", "").replace("-", "").replace("_", "").upper()
 
 
+# Alpaca rejects crypto orders below 1e-8 ("order qty must be >= minimal qty
+# of order 0.000000002", code 40310000). A position whose quantity is below
+# this is unsellable: a qty-based order floors to zero, and the full-position
+# close API rejects it too. Such residue accumulates from partial closes
+# (the trade history is full of 0.00000001 cleanup sells). Treat anything
+# under this as effectively flat.
+DUST_QTY = 1e-8
+
+
+def is_effectively_flat(qty) -> bool:
+    """True when a position quantity is zero or sub-dust (< 1e-8).
+
+    Alpaca crypto qty is a Decimal; residues like 1.4e-9 are truthy
+    (> 0) but unsellable. Callers use this to avoid firing exits on a
+    holding that cannot be closed and to treat it as gone.
+    """
+    try:
+        return abs(float(qty)) < DUST_QTY
+    except (TypeError, ValueError):
+        return True
+
+
 async def _cancel_orders_for_symbol(symbol: str):
     """Cancel all open orders for a specific symbol to free up the position.
 
@@ -91,6 +113,20 @@ def _extract_api_error(e: Exception) -> tuple[int | None, str | None, int | None
     return error_status, error_code, error_msg
 
 
+def _is_nothing_to_close_error(e: Exception) -> bool:
+    """True when a close failure means the position has no sellable quantity.
+
+    Alpaca returns code 40310000 with "order qty must be >= minimal qty of
+    order 0.000000002" for zero/dust positions. Such a close can never
+    succeed, so callers must treat the holding as already flat.
+    """
+    _, error_code, error_msg = _extract_api_error(e)
+    msg = (error_msg or str(e)).lower()
+    if "minimal qty" in msg or ("minimum" in msg and "qty" in msg):
+        return True
+    return str(error_code) == "40310000"
+
+
 async def close_position(symbol: str, pos_data: dict | None = None,
                          current_price: float | None = None) -> dict | None:
     """
@@ -108,6 +144,9 @@ async def close_position(symbol: str, pos_data: dict | None = None,
         - fee: float (estimated fee)
         - order_id: str
         - trade_value: float (actual dollar value filled)
+        - already_flat: bool (present and True when the position held no
+          sellable quantity -- qty 0/dust -- so no order was placed; callers
+          must clear local state rather than retry the close)
     Returns None on failure.
     """
     from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest, ClosePositionRequest
@@ -136,6 +175,30 @@ async def close_position(symbol: str, pos_data: dict | None = None,
 
             qty_avail, qty_total = _get_pos_qty_available(pos)
             avg_entry = float(pos.avg_entry_price)
+
+            # A position can linger with qty == 0 (or sub-dust residue) after a
+            # fill/partial close while Alpaca still lists it. Attempting a close
+            # is guaranteed to fail with 40310000 ("order qty must be >= minimal
+            # qty of order 0.000000002"), and main.py -- which saw the stale qty
+            # from this cycle's earlier fetch -- would retry the exit forever
+            # (observed live 2026-10-06: BTC/ETH "EXIT" + "Full close failed"
+            # every 60s for 80+ minutes). Report it as already flat so the caller
+            # clears local state instead of retrying an impossible close.
+            if is_effectively_flat(qty_total):
+                logger.warning(
+                    f"Close {symbol}: position is effectively flat "
+                    f"(qty_total={qty_total:.8f} < dust {DUST_QTY:g}) -- "
+                    f"nothing to sell, treating as closed"
+                )
+                return {
+                    "already_flat": True,
+                    "fill_price": current_price or avg_entry,
+                    "qty": 0.0,
+                    "fee": 0.0,
+                    "order_id": None,
+                    "trade_value": 0.0,
+                    "slippage_pct": None,
+                }
 
             # qty_available may be less than qty if open orders block the position.
             if qty_total > 0 and qty_avail < qty_total * 0.999:
@@ -300,8 +363,18 @@ async def _close_position_full(
         fill_price = float(order.filled_avg_price) if order.filled_avg_price else (current_price or avg_entry)
 
         if filled_qty == 0.0:
+            # The position has no sellable quantity left (0/dust). Report it as
+            # already flat so the caller clears local state instead of retrying.
             logger.warning(f"Full close {alpaca_sym}: no fills (position may already be gone)")
-            return None
+            return {
+                "already_flat": True,
+                "fill_price": current_price or avg_entry,
+                "qty": 0.0,
+                "fee": 0.0,
+                "order_id": None,
+                "trade_value": 0.0,
+                "slippage_pct": None,
+            }
 
         fee = (filled_qty * fill_price) * FEE_RATE
         slippage_pct = ((fill_price - current_price) / current_price) if current_price else None
@@ -316,6 +389,24 @@ async def _close_position_full(
             "slippage_pct": slippage_pct,
         }
     except Exception as e:
+        # Alpaca rejects closing a position whose qty is zero/dust with
+        # 40310000 "order qty must be >= minimal qty of order 0.000000002".
+        # That is not a transient failure -- the holding is gone -- so signal
+        # "already flat" rather than None, letting main.py clear local state
+        # instead of retrying an impossible close every cycle.
+        if _is_nothing_to_close_error(e):
+            logger.warning(
+                f"Full close {alpaca_sym}: nothing to close ({e}) -- treating as already flat"
+            )
+            return {
+                "already_flat": True,
+                "fill_price": current_price or avg_entry,
+                "qty": 0.0,
+                "fee": 0.0,
+                "order_id": None,
+                "trade_value": 0.0,
+                "slippage_pct": None,
+            }
         logger.error(f"Full close {alpaca_sym} failed: {type(e).__name__}: {e}")
         return None
 

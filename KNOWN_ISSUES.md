@@ -1,6 +1,30 @@
 # Known Issues / Notes for Later
 
-Last updated: 2026-07-27
+Last updated: 2026-10-06
+
+## Infinite EXIT loop on a phantom/dust position (FIXED 2026-10-06)
+
+Live 03:31–04:54 UTC: BTC/USD and ETH/USD each fired an EXIT every 60s
+(`Max hold 98.0h` / `Trailing stop`), then logged
+`Close ...: sellable qty=0 (dust or locked, qty_total=0.00000000, ...)` and
+`Full close BTCUSD failed: APIError: {"code":40310000,"message":"order qty
+must be >= minimal qty of order 0.000000002"}`, indefinitely; the
+`Positions: 2/3` count never dropped.
+
+Cause: the cycle's position fetch returned a truthy-but-stale qty (Alpaca
+crypto qty is a `Decimal`; sub-dust residue like `1.4e-9` is `> 0` but prints
+as `0.00000000`), so main.py's `qty > 0` gate passed and an EXIT fired. The
+exit re-fetched the position, got qty 0/dust, floored the sellable quantity
+to 0, fell back to the full-position close API, and Alpaca rejected it. The
+failure returned `None` -- indistinguishable from a transient error -- so
+main.py left local state intact and retried forever.
+
+Fix: dust (qty < `portfolio.DUST_QTY` = 1e-8) is treated as "flat"
+everywhere. `close_position()` and `_close_position_full()` now return a
+sentinel dict with `already_flat=True` (no order placed) instead of `None`;
+`get_all_positions()` omits flat positions; main.py's exit block clears local
+state via the new `clear_position_state()` helper. Regression:
+`tests/test_phantom_exit_loop.py` (18 checks; fails on pre-fix code).
 
 ## Committee cannot trigger exits (FIXED 2026-09-20)
 

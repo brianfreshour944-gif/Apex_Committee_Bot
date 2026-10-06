@@ -42,7 +42,7 @@ from committee import run_committee
 from sentinel import sentinel
 from position_sizing import calculate_trade_size
 from orders import place_order, cancel_stale_orders
-from portfolio import normalize_symbol, close_position, close_all_positions, write_heartbeat
+from portfolio import normalize_symbol, is_effectively_flat, close_position, close_all_positions, write_heartbeat
 from database import init_db, report_equity, record_realized_pnl
 from notifications import send_discord_alert, close_session
 from models import MarketSnapshot
@@ -108,6 +108,22 @@ def load_state():
         logger.info("[DISK] Restored persistent state from disk")
     except Exception as e:
         logger.warning(f"State load failed: {e}")
+
+
+async def clear_position_state(alpaca_sym: str):
+    """Remove all local state for a position that is no longer held.
+
+    Shared by the normal exit path and the already-flat path (position gone
+    or reduced to unsellable dust). Called while holding the state lock.
+    """
+    lock = get_state_lock()
+    async with lock:
+        entry_times.pop(alpaca_sym, None)
+        entry_prices.pop(alpaca_sym, None)
+        peak_prices.pop(alpaca_sym, None)
+        entry_confidence.pop(alpaca_sym, None)
+        entry_regime.pop(alpaca_sym, None)
+    await save_state()
 
 
 async def sync_state_with_alpaca():
@@ -382,7 +398,11 @@ async def run():
                     # lookup in the exit block missed and held_h defaulted to 0.
                     alpaca_sym = normalize_symbol(symbol)
                     pos_data   = current_positions.get(alpaca_sym)
-                    has_pos    = pos_data is not None and pos_data["qty"] > 0
+                    has_pos    = (
+                        pos_data is not None
+                        and pos_data["qty"] > 0
+                        and not is_effectively_flat(pos_data["qty"])
+                    )
 
                     if df is None or indicators is None:
                         logger.warning(f"No data for {symbol} — skipping")
@@ -511,6 +531,22 @@ async def run():
                         if exit_reason:
                             logger.info(f"EXIT {symbol}: {exit_reason}")
                             exit_result = await close_position(symbol, pos_data, current_price=price)
+                            if exit_result and exit_result.get("already_flat"):
+                                # The position is gone or reduced to unsellable
+                                # dust (qty 0 / < 1e-8): there is nothing to
+                                # close. The old code treated this like any
+                                # other failed close -- it left local state
+                                # intact, so the exit re-fired and the API
+                                # rejected it every cycle forever (live
+                                # 2026-10-06: BTC/ETH looped for 80+ min).
+                                # Clear local state so the position is
+                                # considered closed.
+                                logger.warning(
+                                    f"EXIT {symbol}: position already flat -- "
+                                    f"clearing local state (no order placed)"
+                                )
+                                await clear_position_state(alpaca_sym)
+                                continue
                             if exit_result:
                                 fill_price = exit_result["fill_price"]
                                 exit_qty = exit_result["qty"]
@@ -557,13 +593,7 @@ async def run():
                                 # Sync buying_power from Alpaca after SELL
                                 _, buying_power, _ = await get_account_state()
                                 # Atomic cleanup of state under lock
-                                async with lock:
-                                    entry_times.pop(alpaca_sym, None)
-                                    entry_prices.pop(alpaca_sym, None)
-                                    peak_prices.pop(alpaca_sym, None)
-                                    entry_confidence.pop(alpaca_sym, None)
-                                    entry_regime.pop(alpaca_sym, None)
-                                await save_state()
+                                await clear_position_state(alpaca_sym)
                                 try:
                                     await send_discord_alert(
                                         title=f"{'[BULL]' if realized_pnl<0 else '[GREEN]'} SOLD {symbol}",
