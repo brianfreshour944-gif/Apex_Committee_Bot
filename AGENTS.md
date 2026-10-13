@@ -15,6 +15,44 @@
 4. Max hold: 8h
 5. Emergency: portfolio drawdown -10% liquidates all; buy cooldown 900s after crash exits
 
+## Architecture (entry path, main.py:621-757, flat positions only)
+1. Fail-closed: skip if the positions fetch failed this cycle
+2. Cooldown (`cooldowns`, set on BUY and on EXIT)
+3. Max positions (`max_open_positions`)
+4. 3 brains → `run_committee` → `sentinel.check` (may veto / cap size)
+5. `action != "BUY"` → skip
+6. Orderbook "whale" gate (fail-closed — see bug below)
+7. Sizing (`SIZING_TIERS`) → exposure cap (`max_total_exposure_pct`) → `place_order`
+
+## Known bug fixed 2026-10-13 (entry logic)
+Four entry-path defects found in review and fixed together; regression suite
+`tests/test_entry_logic.py` (20 checks, fails on pre-fix code). All 7 suites exit 0 as of this fix.
+1. **Falling-knife buy.** `committee.py` gave DUMP the SAME loosened 0.45
+   threshold as ACCUMULATION, so a strong transformer + an oversold-RSI quant
+   opened a long mid-dump (momentum's 20%-weight "not buying falling knife"
+   SKIP cannot veto). Fix: DUMP uses the full `min_vote_score` (0.60), AND the
+   sentinel hard-blocks BUY in `BLOCKED_ENTRY_REGIMES` (default DUMP). The
+   sentinel block is ENTRY-only — SELL/exits in DUMP are unaffected.
+2. **Whale gate failed OPEN.** `data_feed.get_orderbook_ratio` returned a
+   passing `1.0` when the L2 book had no ask depth, and `None` on error; both
+   PASSED in main.py, so the gate never blocked anything. Fix: empty/no-depth/
+   error → `None`, and main.py vetoes on `None` when `orderbook_gate_fail_closed`
+   (default True).
+3. **No post-exit cooldown.** `clear_position_state()` removed state but never
+   set `cooldowns` (only set on BUY), so a stop-out was immediately
+   re-enterable → whipsaw. Fix: `clear_position_state()` arms
+   `exit_cooldown_seconds` (default 300s), and `sync_state_with_alpaca()` no
+   longer pops cooldowns so it survives a restart.
+4. **momentum transition memory.** `_prev_regime` advanced on every `decide()`,
+   including the exit-path committee call, so a DUMP→ACCUM transition could be
+   consumed while still holding. Fix: advance only while flat.
+Also documented (no behavior change): `CommitteeResult.confidence` is the
+winning action's weighted score SUM, not a calibrated probability; it drives
+sizing.
+NOTE: the DUMP threshold change is symmetric, so a committee-driven SELL in
+DUMP now also needs 0.60 (was 0.45). Acceptable — mechanical exits remain
+primary and run before the committee SELL.
+
 ## Known bug fixed 2026-09-29 (trailing stop)
 `main.py:401` gated the trailing stop on `pnl_pct > 0`, so a position that
 rallied then dumped below entry deactivated its own trail and rode to the

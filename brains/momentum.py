@@ -28,7 +28,14 @@ class MomentumBrain:
         atr_pct   = ind["atr_pct"]
 
         prev_regime = self._prev_regime.get(symbol, regime)
-        self._prev_regime[symbol] = regime
+        # Advance the transition memory ONLY while flat. While holding, the
+        # exit-path committee also calls decide() every cycle; if we advanced
+        # here too, a DUMP->ACCUMULATION entry transition that happens during
+        # the hold would be "consumed" (recorded as prev) and be gone by the
+        # time the bot is flat and could actually act on it. Exits still read
+        # `regime` directly for the regime-based branches below.
+        if not snapshot.has_position:
+            self._prev_regime[symbol] = regime
 
         # ── Transition detection ────────────────────────────────────────────────
 

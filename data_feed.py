@@ -238,8 +238,13 @@ async def get_all_positions() -> dict | None:
 
 async def get_orderbook_ratio(symbol: str) -> float | None:
     """
-    Fetches real-time L2 orderbook and computes total Bid Size / total Ask Size.
-    Safe fallbacks handle '.s' vs '.size' vs dictionary keys across API versions.
+    Returns the bid/ask depth ratio, or None when the book is unavailable
+    (fetch error, empty book, or no ask depth). None means "could not verify
+    liquidity" -- the caller decides whether that blocks the trade.
+
+    NOTE (fail-open bug): this previously returned 1.0 (a PASSING ratio) when
+    ask_vol <= 0, so an empty/thin L2 book sailed through the whale gate. It
+    now returns None so the caller can fail CLOSED.
 
     FIXED: this was previously a plain `def`, but main.py calls it with
     `await get_orderbook_ratio(symbol)` -- awaiting a non-async function
@@ -274,8 +279,9 @@ async def get_orderbook_ratio(symbol: str) -> float | None:
         bid_vol = sum(_get_size(b) for b in bids)
         ask_vol = sum(_get_size(a) for a in asks)
 
+        # No ask depth -> cannot compute a meaningful ratio -> unverifiable.
         if ask_vol <= 0:
-            return 1.0
+            return None
         return float(bid_vol / ask_vol)
     except Exception as e:
         logger.warning(f"Orderbook ratio fetch error for {symbol}: {e}")

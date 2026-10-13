@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     max_hold_hours: float = 8.0
     max_open_positions: int = 3
     cooldown_seconds_buy: int = 900
+    # Cooldown applied when a position CLOSES (any exit reason). The buy
+    # cooldown above only covers the 900s after an ENTRY, so a symbol that
+    # stopped out at -4% was immediately re-enterable on the next cycle --
+    # and because a DUMP reads as oversold RSI, the quant brain would vote
+    # BUY again, producing a stop-out -> re-buy whipsaw. This pauses a symbol
+    # after it exits. Kept shorter than cooldown_seconds_buy so a genuinely
+    # good re-entry after a take-profit is not blocked for a full 15 min.
+    exit_cooldown_seconds: int = 300
     
     # Fee and slippage
     fee_rate: float = 0.001  # 0.1% per side (Alpaca crypto default)
@@ -38,6 +46,11 @@ class Settings(BaseSettings):
     sentinel_max_atr_pct: float = 6.0
     sentinel_max_vol_mult: float = 4.0
     max_consecutive_losses: int = 4
+    # Regimes in which NEW entries are hard-blocked (comma-separated). DUMP is
+    # an active downtrend -- the falling-knife case. This is the last line of
+    # defense: even if the committee votes BUY, the sentinel vetoes the entry.
+    # Exits (SELL) are never blocked, so a blocked regime can still close out.
+    blocked_entry_regimes: str = "DUMP"
 
     max_drawdown_stop: float = -0.10
 
@@ -69,6 +82,12 @@ class Settings(BaseSettings):
     transformer_confidence_stretch: float = 1.8
     
     min_bid_ask_ratio: float = 0.65
+    # Fail-closed orderbook (whale) gate. The gate used to return a passing
+    # ratio (1.0) when the L2 book was empty, and a passing None when the fetch
+    # errored -- so it never blocked a trade. Now a missing/empty/errored book
+    # VETOES the entry (we cannot verify liquidity, so we don't take the trade),
+    # unless this is set False to restore the old fail-open behavior.
+    orderbook_gate_fail_closed: bool = True
     state_file_path: str = "committee_bot_state.json"
     sleep_per_loop: int = 60
     
@@ -128,15 +147,20 @@ TRAILING_STOP_PCT    = settings.trailing_stop_pct
 MAX_HOLD_HOURS       = settings.max_hold_hours
 MAX_OPEN_POSITIONS   = settings.max_open_positions
 COOLDOWN_SECONDS_BUY = settings.cooldown_seconds_buy
+EXIT_COOLDOWN_SECONDS = settings.exit_cooldown_seconds
 SENTINEL_MAX_ATR_PCT  = settings.sentinel_max_atr_pct
 SENTINEL_MAX_VOL_MULT = settings.sentinel_max_vol_mult
 MAX_CONSECUTIVE_LOSSES = settings.max_consecutive_losses
+BLOCKED_ENTRY_REGIMES = frozenset(
+    r.strip().upper() for r in settings.blocked_entry_regimes.split(",") if r.strip()
+)
 MAX_DRAWDOWN_STOP = settings.max_drawdown_stop
 MAX_TOTAL_EXPOSURE_PCT = settings.max_total_exposure_pct
 STOP_LOSS_ATR_THRESHOLD = settings.stop_loss_atr_threshold
 STOP_LOSS_ATR_MAX_MULT = settings.stop_loss_atr_max_mult
 TRANSFORMER_CONFIDENCE_STRETCH = settings.transformer_confidence_stretch
 MIN_BID_ASK_RATIO  = settings.min_bid_ask_ratio
+ORDERBOOK_GATE_FAIL_CLOSED = settings.orderbook_gate_fail_closed
 STATE_FILE_PATH    = settings.state_file_path
 SLEEP_PER_LOOP = settings.sleep_per_loop
 FEE_RATE           = settings.fee_rate

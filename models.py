@@ -33,7 +33,7 @@ class AIDecision:
 class CommitteeResult:
     """The committee's final decision after weighted voting."""
     action:       str
-    confidence:   float          # weighted committee confidence
+    confidence:   float          # winning action's WEIGHTED SCORE SUM (0-1), NOT a probability; drives sizing
     regime:       str            # most common regime across brains
     votes:        list[AIDecision] = field(default_factory=list)
     vote_breakdown: dict         = field(default_factory=dict)  # action → weighted score

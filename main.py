@@ -28,8 +28,8 @@ from config import (
     logger, BOT_NAME, SYMBOLS,
     MAX_OPEN_POSITIONS, MAX_DRAWDOWN_STOP,
     STOP_LOSS_PCT, TAKE_PROFIT_PCT, TRAILING_STOP_PCT, MAX_HOLD_HOURS,
-    COOLDOWN_SECONDS_BUY, SLEEP_PER_LOOP,
-    STATE_FILE_PATH, MIN_BID_ASK_RATIO,
+    COOLDOWN_SECONDS_BUY, EXIT_COOLDOWN_SECONDS, SLEEP_PER_LOOP,
+    STATE_FILE_PATH, MIN_BID_ASK_RATIO, ORDERBOOK_GATE_FAIL_CLOSED,
     FEE_RATE, MAX_TOTAL_EXPOSURE_PCT,
     STOP_LOSS_ATR_THRESHOLD, STOP_LOSS_ATR_MAX_MULT,
 )
@@ -115,6 +115,12 @@ async def clear_position_state(alpaca_sym: str):
 
     Shared by the normal exit path and the already-flat path (position gone
     or reduced to unsellable dust). Called while holding the state lock.
+
+    Also arms the POST-EXIT cooldown. Without it, the buy cooldown (set only
+    on entry) did nothing to stop a stop-out -> re-buy whipsaw: the symbol was
+    immediately re-enterable next cycle, and a DUMP reads as oversold RSI so
+    the quant brain would vote BUY again. The cooldown is a timestamp compared
+    against `time.time()` in the entry gate, matching the buy-cooldown format.
     """
     lock = get_state_lock()
     async with lock:
@@ -123,6 +129,7 @@ async def clear_position_state(alpaca_sym: str):
         peak_prices.pop(alpaca_sym, None)
         entry_confidence.pop(alpaca_sym, None)
         entry_regime.pop(alpaca_sym, None)
+        cooldowns[alpaca_sym] = time.time() + EXIT_COOLDOWN_SECONDS
     await save_state()
 
 
@@ -190,12 +197,15 @@ async def sync_state_with_alpaca():
                 peak_prices[alpaca_sym] = pdata["avg_entry"]
                 logger.info(f"[SYNC] Added missing position: {alpaca_sym} qty={pdata['qty']} entry={pdata['avg_entry']}")
         
-        # Remove local state for positions that no longer exist on Alpaca
+        # Remove local state for positions that no longer exist on Alpaca.
+        # cooldowns is intentionally NOT popped here: at startup this path also
+        # covers a position that was closed while the bot was down, and the
+        # post-exit cooldown (set by clear_position_state) must survive the
+        # restart. A stale cooldown simply expires on its own.
         for alpaca_sym in local_symbols - alpaca_symbols:
             entry_times.pop(alpaca_sym, None)
             entry_prices.pop(alpaca_sym, None)
             peak_prices.pop(alpaca_sym, None)
-            cooldowns.pop(alpaca_sym, None)
             entry_confidence.pop(alpaca_sym, None)
             entry_regime.pop(alpaca_sym, None)
             logger.info(f"[SYNC] Removed stale local state: {alpaca_sym}")
@@ -665,8 +675,20 @@ async def run():
                         continue
 
                     # ── L2 Orderbook Whale Gate ──────────────────────────────────
+                    # Fail-closed: a None ratio means the book could not be
+                    # verified (fetch error or empty/thin L2). Previously None
+                    # and an empty book both PASSED, so this gate never actually
+                    # blocked anything. We now refuse to open a position we
+                    # cannot liquidity-check.
                     ob_ratio = await get_orderbook_ratio(symbol)
-                    if ob_ratio is not None and ob_ratio < MIN_BID_ASK_RATIO:
+                    if ob_ratio is None:
+                        if ORDERBOOK_GATE_FAIL_CLOSED:
+                            logger.warning(
+                                f"🐋 WHALE GATE VETO {symbol}: orderbook unavailable — "
+                                f"cannot verify liquidity (fail-closed)"
+                            )
+                            continue
+                    elif ob_ratio < MIN_BID_ASK_RATIO:
                         logger.warning(
                             f"🐋 WHALE GATE VETO {symbol}: Bid/Ask depth ratio {ob_ratio:.2f} < min {MIN_BID_ASK_RATIO}"
                         )

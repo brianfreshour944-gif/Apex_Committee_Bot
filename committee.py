@@ -16,12 +16,27 @@ def run_committee(
       quant       = 30%
       momentum    = 20%
 
-    Winning action must exceed MIN_VOTE_SCORE (default 0.60) to execute.
+    `confidence` in the returned CommitteeResult is the winning action's
+    weighted score SUM, NOT a calibrated probability of success. It is the
+    input to position sizing (SIZING_TIERS) and the threshold gate below.
+
+    Winning action must exceed the regime threshold to execute.
     Below threshold -> SKIP.
 
     Special rules:
       - When flat (no position), SELL votes are ignored / converted to SKIP
       - In ACCUMULATION regime we bias toward BUY and use a lower threshold (0.45)
+      - In DUMP we use the FULL threshold (MIN_VOTE_SCORE): buying into an
+        active dump is a falling-knife trade. The old code gave DUMP the same
+        0.45 loosening as ACCUMULATION, which let a strong transformer + an
+        oversold-RSI quant open a long mid-dump (momentum's 20%-weight "not
+        buying falling knife" SKIP cannot veto). Entries in DUMP are additionally
+        hard-blocked in the sentinel (see BLOCKED_ENTRY_REGIMES).
+        NOTE: this threshold is symmetric (it gates whatever action wins), so it
+        also makes a committee-driven SELL in DUMP need 0.60 rather than 0.45.
+        That is acceptable because the committee SELL is a SECONDARY exit --
+        the mechanical stop/trail/max-hold exits (which run before it) remain
+        primary and are unaffected.
     """
 
     # ── Pre-process decisions: when flat, ignore SELL votes ──────────────
@@ -76,11 +91,13 @@ def run_committee(
     winning_score  = action_scores[winning_action]
 
     # Regime-adaptive threshold (loosened)
-    if regime in ["ACCUMULATION", "DUMP"]:
+    if regime == "ACCUMULATION":
         required_score = 0.45   # Lowered from 0.52 to catch bottoms earlier
     elif regime == "DISTRIBUTION":
         required_score = 0.68   # Higher threshold to avoid buying top exhaustion
     else:
+        # UPTREND and DUMP both use the full threshold. DUMP is deliberately
+        # NOT loosened: a dump is where the falling-knife risk is greatest.
         required_score = MIN_VOTE_SCORE
 
 # Log the full vote breakdown at DEBUG (not INFO — INFO blocks the event loop)

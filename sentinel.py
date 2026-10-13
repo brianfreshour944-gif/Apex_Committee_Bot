@@ -6,7 +6,7 @@ import math
 from config import (
     logger,
     SENTINEL_MAX_ATR_PCT, SENTINEL_MAX_VOL_MULT,
-    MAX_CONSECUTIVE_LOSSES,
+    MAX_CONSECUTIVE_LOSSES, BLOCKED_ENTRY_REGIMES,
 )
 from models import MarketSnapshot, CommitteeResult, SentinelReport
 
@@ -20,7 +20,9 @@ class Sentinel:
       3. Consecutive losses — a specific symbol's strategy may have broken;
          pause THAT symbol to protect equity (tracked per-symbol, see below)
       4. Insufficient buying power — don't over-leverage
-      5. ATR > 3% but not vetoing — caps position size to 50%
+      5. Blocked entry regime — never open NEW exposure in DUMP (falling knife);
+         ENTRY-only, exits are unaffected
+      6. ATR > 3% but not vetoing — caps position size to 50%
 
     FIXED: consecutive-loss tracking was previously a single counter shared
     across ALL symbols (self._consecutive_losses = 0). With multiple
@@ -83,6 +85,18 @@ class Sentinel:
             return SentinelReport(
                 veto=True,
                 reason=f"💸 Buying power ${bp:.2f} insufficient for minimum order",
+            )
+
+        # ── Falling-knife hard block (entry only) ──────────────────────────────
+        # Even if the committee votes BUY, refuse NEW exposure in a regime we
+        # have declared untradeable (default DUMP). ENTRY-only: a SELL/exit is
+        # never blocked here, so a position opened before the dump can still be
+        # closed by the exit logic. This is the last line of defense behind the
+        # committee's threshold change.
+        if committee.action == "BUY" and snapshot.regime.upper() in BLOCKED_ENTRY_REGIMES:
+            return SentinelReport(
+                veto=True,
+                reason=f"🔪 Entry blocked in {snapshot.regime} regime — no buying into an active downtrend",
             )
 
         # ── Soft warnings: allow trade but cap size ─────────────────────────────
