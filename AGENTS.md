@@ -148,6 +148,33 @@ bars with zero env vars, while `trading_client` requires valid keys. Two causes:
 the endpoint is chosen solely by the flag. The bot does NOT stop on auth
 failure; it fails closed on entries and prints `Equity: $0.00` indefinitely.
 
+## Fixed 2026-10-20 (sentinel loss pause was a one-way latch — "symbol dies forever")
+The per-symbol consecutive-loss pause was unrecoverable BY CONSTRUCTION.
+`register_win()` was the ONLY code that reset a streak, and it runs solely on
+the EXIT path (main.py exit block). Once a symbol hit `MAX_CONSECUTIVE_LOSSES`
+(default 4), `sentinel.check()` returned a hard veto that blocks every new
+entry — so the symbol could never be held again, could never exit again, and
+`register_win()` could never fire. The counter is not persisted by
+`save_state()`, so only a PROCESS RESTART cleared it: for a continuously
+running bot, effectively permanent. Symptom: the symbol silently stops trading
+forever, which is indistinguishable from "no signal".
+Fix: the pause is now TIME-LIMITED via `sentinel_loss_cooldown_seconds`
+(config, default 14400 = 4h). `register_loss()` stamps `_paused_until[symbol]`
+when the limit is hit; `check()` calls `_losses()`, which expires a timed-out
+pause (resets the streak, clears the marker) before evaluating. A symbol that
+is still genuinely broken simply re-trips the pause on its next losing streak;
+one caught in a bad patch recovers. `register_win()` still clears both.
+Also made the skip VISIBLE: `position_sizing.py` logged the below-MIN_ORDER_USD
+case at `debug` (never printed — config level is INFO) and main.py's
+`if trade_value <= 0: continue` logged nothing at all. Both now log a WARNING,
+so a BUY signal that never reaches an order is always traceable.
+Regression: `tests/test_sentinel_loss_pause.py` (18 checks, incl. a direct
+reproduction of the pre-fix latch; uses a controllable fake clock so
+`register_loss` and `check` agree on time). All 10 suites exit 0.
+NOTE: at the live $100 paper equity the symbol can still be capped to $0 by
+MIN_ORDER_USD=$10 (see the small-equity note below) — that is a config/account
+size issue, NOT this bug, and is now logged rather than silent.
+
 ## Test infra notes
 - Tests import `config` → pydantic Settings REQUIRES `APCA_API_KEY_ID` /
   `APCA_API_SECRET_KEY` present (any placeholder works in tests; values are

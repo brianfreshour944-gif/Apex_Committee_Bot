@@ -772,6 +772,14 @@ async def run():
                         equity, committee.confidence, sentinel_report.cap_pct
                     )
                     if trade_value <= 0:
+                        # calculate_trade_size() logs the reason (below the
+                        # MIN_ORDER_USD floor). Log the skip here too so a BUY
+                        # that never reaches an order is never silent.
+                        logger.warning(
+                            f"[WAIT] {symbol}: BUY signal sized to $0 — skipping entry "
+                            f"(conf={committee.confidence:.3f}"
+                            f"{f', sentinel cap {sentinel_report.cap_pct:.0%}' if sentinel_report.cap_pct else ''})"
+                        )
                         continue
 
                     if buying_power < trade_value:

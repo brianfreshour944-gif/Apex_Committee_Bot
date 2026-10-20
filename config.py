@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     sentinel_max_atr_pct: float = 6.0
     sentinel_max_vol_mult: float = 4.0
     max_consecutive_losses: int = 4
+    # How long a symbol stays paused after hitting max_consecutive_losses.
+    # The pause MUST expire: the sentinel veto blocks every new entry, and the
+    # only thing that resets the streak is a win on the exit path -- so an
+    # indefinite pause would make the symbol permanently unenterable AND
+    # unexitable (the original one-way-latch bug). Default 4h.
+    sentinel_loss_cooldown_seconds: int = 14400
     # Regimes in which NEW entries are hard-blocked (comma-separated). DUMP is
     # an active downtrend -- the falling-knife case. This is the last line of
     # defense: even if the committee votes BUY, the sentinel vetoes the entry.
@@ -157,6 +163,7 @@ EXIT_COOLDOWN_SECONDS = settings.exit_cooldown_seconds
 SENTINEL_MAX_ATR_PCT  = settings.sentinel_max_atr_pct
 SENTINEL_MAX_VOL_MULT = settings.sentinel_max_vol_mult
 MAX_CONSECUTIVE_LOSSES = settings.max_consecutive_losses
+SENTINEL_LOSS_COOLDOWN_SECONDS = settings.sentinel_loss_cooldown_seconds
 BLOCKED_ENTRY_REGIMES = frozenset(
     r.strip().upper() for r in settings.blocked_entry_regimes.split(",") if r.strip()
 )

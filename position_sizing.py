@@ -39,7 +39,12 @@ def calculate_trade_size(
     trade_value = min(trade_value, MAX_SINGLE_TRADE_USD)
 
     if trade_value < MIN_ORDER_USD:
-        logger.debug(f"Trade value ${trade_value:.2f} below min ${MIN_ORDER_USD} — skipping")
+        logger.warning(
+            f"[WAIT] Sizing skip: ${trade_value:.2f} below MIN_ORDER_USD ${MIN_ORDER_USD:.2f} "
+            f"(equity=${equity:.2f} x {pct*100:.1f}%"
+            f"{f' x {sentinel_cap:.0%} sentinel cap' if sentinel_cap else ''}) "
+            f"— no trade this cycle"
+        )
         return 0.0
 
     logger.info(
