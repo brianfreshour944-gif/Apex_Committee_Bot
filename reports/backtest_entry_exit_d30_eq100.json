@@ -1,0 +1,60 @@
+{
+  "params": {
+    "days": 30,
+    "symbols": "BTC/USD,ETH/USD,SOL/USD",
+    "equity": 100.0
+  },
+  "results": [
+    {
+      "symbol": "BTC/USD",
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "win_rate": 0.0,
+      "gross": 0,
+      "fees": 0,
+      "net": 0,
+      "net_pct": 0.0,
+      "profit_factor": 0.0,
+      "avg_win": 0.0,
+      "avg_loss": 0.0,
+      "max_dd_pct": 0.0,
+      "buy_hold_pct": 0.45,
+      "excess_vs_hold_pct": -0.45
+    },
+    {
+      "symbol": "ETH/USD",
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "win_rate": 0.0,
+      "gross": 0,
+      "fees": 0,
+      "net": 0,
+      "net_pct": 0.0,
+      "profit_factor": 0.0,
+      "avg_win": 0.0,
+      "avg_loss": 0.0,
+      "max_dd_pct": 0.0,
+      "buy_hold_pct": -9.84,
+      "excess_vs_hold_pct": 9.84
+    },
+    {
+      "symbol": "SOL/USD",
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "win_rate": 0.0,
+      "gross": 0,
+      "fees": 0,
+      "net": 0,
+      "net_pct": 0.0,
+      "profit_factor": 0.0,
+      "avg_win": 0.0,
+      "avg_loss": 0.0,
+      "max_dd_pct": 0.0,
+      "buy_hold_pct": -6.18,
+      "excess_vs_hold_pct": 6.18
+    }
+  ]
+}

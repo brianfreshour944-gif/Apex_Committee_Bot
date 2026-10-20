@@ -175,6 +175,32 @@ NOTE: at the live $100 paper equity the symbol can still be capped to $0 by
 MIN_ORDER_USD=$10 (see the small-equity note below) — that is a config/account
 size issue, NOT this bug, and is now logged rather than silent.
 
+## Backtest harness (2026-10-20) — reports/backtest_entry_exit.py
+First backtest infrastructure in this repo (audits previously flagged its
+absence). Replays the REAL modules — 3 brains, committee, sentinel, sizing, and
+the full exit ladder — bar-by-bar over real Alpaca 15m crypto bars, with NO
+LOOK-AHEAD (bar i sees only bars[0..i]; decisions fill at bar i+1's OPEN).
+Crypto bars need NO credentials (CryptoHistoricalDataClient works unauthenticated).
+Key facts when extending it:
+- Momentum brain is STATEFUL (`_prev_regime` transition memory) — a harness that
+  rebuilds brains per bar would silently lose the DUMP->ACCUMULATION BUY signal.
+  The harness reuses module-level singletons, matching live.
+- 34 trades in 30d at $100k equity: net -$172.46 on $152.32 of fees. Gross is
+  ~-$20 on ~$152k traded notional (~0.0%), so FEES ARE 88% OF THE LOSS. The
+  strategy is fee-bound, not signal-bound. Do not read the small % as edge.
+- 19 of 34 exits were `Max hold 8.0h`; ZERO take-profits fired in 30 days. The
+  +6% target is rarely reachable in an 8h window, so the cost side is certain
+  and the profit side is mostly unreachable.
+- At the LIVE $100 equity the harness takes **0 trades in 30 days**: a BUY needs
+  conf >= 0.75 to clear MIN_ORDER_USD=$10 (10% tier x $100), but the 30d BUY
+  confidence ceiling is BTC 0.688 / ETH 0.579 / SOL 0.736. This is the real
+  "symbol stays at 0" cause at small equity — config, not signal. Needs either a
+  larger balance or a deliberate MIN_ORDER_USD change.
+- LIMITS: symbols replayed INDEPENDENTLY (max-positions / exposure cap are
+  per-symbol, not portfolio-wide); orderbook gate DISABLED (no historical L2, so
+  entries are slightly MORE permissive than live); single window, no walk-forward.
+See reports/BACKTEST_ENTRY_EXIT.md for the full write-up.
+
 ## Test infra notes
 - Tests import `config` → pydantic Settings REQUIRES `APCA_API_KEY_ID` /
   `APCA_API_SECRET_KEY` present (any placeholder works in tests; values are
