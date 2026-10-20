@@ -106,6 +106,48 @@ code). All 6 suites exit 0 as of this fix. NOTE: `close_position()` returning
 a dict with `already_flat` is distinct from `None` (a real close failure) —
 do not collapse the two.
 
+## Known bug fixed 2026-10-20 (drawdown kill switch disarmed by failed fetch)
+`main.py` armed the drawdown baseline with `if start_equity is None:
+start_equity = equity`, but `get_account_state()` returns `0.0` on ANY failure
+(auth/network) — indistinguishable from a genuinely empty account. So the FIRST
+failed account fetch latched `start_equity = 0.0`, and the guard
+`drawdown = ... if start_equity > 0 else 0.0` then reported drawdown 0.0
+forever. `MAX_DRAWDOWN_STOP` (-10%) was permanently disarmed for the rest of
+the process lifetime, INCLUDING after auth recovered. Observed live alongside
+the `{"message": "unauthorized."}` outage (see below), which is exactly the
+scenario that triggers it. Fix: arm the baseline only when `equity > 0`
+(otherwise log a warning and leave it `None` to retry next cycle), and guard
+the drawdown subtraction so an unarmed baseline yields `drawdown = 0.0`
+instead of a `TypeError` (subtracting `None`). Baseline still arms once and is
+not re-armed, so the session drawdown budget is unchanged. Regression:
+`tests/test_drawdown_baseline.py` (9 checks; test 7 reproduces the pre-fix
+disarm). All 8 suites exit 0 as of this fix.
+
+## Added 2026-10-20 (alert on sustained account-fetch failure)
+A revoked/bad key makes account + positions + orders all 401 while crypto market
+data (which needs NO credentials) keeps flowing, so the bot fails closed on
+every entry but the log still shows live prices/regimes. It previously sat there
+silently (live: 25+ min of `{"message": "unauthorized."}`). `main.py` now calls
+`track_account_fetch_outcome(equity > 0 and positions_ok)` each cycle: after
+`account_failure_alert_threshold` (config, default 3) consecutive failures it
+logs an ERROR and sends ONE Discord alert; the alert does not repeat while the
+outage continues, and a successful fetch resets the streak and re-arms it.
+Set the threshold to 0 to disable. The positions fetch is used as the stricter
+signal because it gates ALL entries. Regression:
+`tests/test_account_failure_alert.py` (14 checks).
+
+## Diagnosed 2026-10-20 (credential outage signature — not a code bug)
+`{"message": "unauthorized."}` (HTTP 401) on account/positions/order calls
+while bars/indicators/regimes keep updating is a CREDENTIAL problem, not a data
+or network outage. Reproduced with bogus keys on both paper and live endpoints
+(rate limiting is 429, a different message). The asymmetry is by design:
+`CryptoHistoricalDataClient()` (config.py) needs NO credentials and returns real
+bars with zero env vars, while `trading_client` requires valid keys. Two causes:
+(1) invalid/missing keys, or (2) a paper/live key-vs-`apca_api_paper` mismatch —
+`config.py` never reads `APCA_API_BASE_URL` (it is only in `.env.example`), so
+the endpoint is chosen solely by the flag. The bot does NOT stop on auth
+failure; it fails closed on entries and prints `Equity: $0.00` indefinitely.
+
 ## Test infra notes
 - Tests import `config` → pydantic Settings REQUIRES `APCA_API_KEY_ID` /
   `APCA_API_SECRET_KEY` present (any placeholder works in tests; values are

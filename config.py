@@ -88,6 +88,12 @@ class Settings(BaseSettings):
     # VETOES the entry (we cannot verify liquidity, so we don't take the trade),
     # unless this is set False to restore the old fail-open behavior.
     orderbook_gate_fail_closed: bool = True
+    # Consecutive cycles with a FAILED account fetch (auth/network) before a
+    # Discord alert is raised. A bad/revoked key makes every account, position
+    # and order call return 401 while market data (which needs no credentials)
+    # keeps flowing -- so the bot looks alive in the log but cannot trade, and
+    # without this it fails closed forever in silence. Set to 0 to disable.
+    account_failure_alert_threshold: int = 3
     state_file_path: str = "committee_bot_state.json"
     sleep_per_loop: int = 60
     
@@ -161,6 +167,7 @@ STOP_LOSS_ATR_MAX_MULT = settings.stop_loss_atr_max_mult
 TRANSFORMER_CONFIDENCE_STRETCH = settings.transformer_confidence_stretch
 MIN_BID_ASK_RATIO  = settings.min_bid_ask_ratio
 ORDERBOOK_GATE_FAIL_CLOSED = settings.orderbook_gate_fail_closed
+ACCOUNT_FAILURE_ALERT_THRESHOLD = settings.account_failure_alert_threshold
 STATE_FILE_PATH    = settings.state_file_path
 SLEEP_PER_LOOP = settings.sleep_per_loop
 FEE_RATE           = settings.fee_rate

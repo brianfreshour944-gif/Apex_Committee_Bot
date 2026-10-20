@@ -30,6 +30,7 @@ from config import (
     STOP_LOSS_PCT, TAKE_PROFIT_PCT, TRAILING_STOP_PCT, MAX_HOLD_HOURS,
     COOLDOWN_SECONDS_BUY, EXIT_COOLDOWN_SECONDS, SLEEP_PER_LOOP,
     STATE_FILE_PATH, MIN_BID_ASK_RATIO, ORDERBOOK_GATE_FAIL_CLOSED,
+    ACCOUNT_FAILURE_ALERT_THRESHOLD,
     FEE_RATE, MAX_TOTAL_EXPOSURE_PCT,
     STOP_LOSS_ATR_THRESHOLD, STOP_LOSS_ATR_MAX_MULT,
 )
@@ -55,6 +56,13 @@ cooldowns:     dict  = {}    # {alpaca_sym: float}  — timestamp
 entry_confidence: dict = {}  # {alpaca_sym: float}  — committee confidence at entry, for calibration analysis
 entry_regime:     dict = {}  # {alpaca_sym: str}     — regime at entry, for regime-performance analysis
 start_equity:  float | None = None
+
+# Consecutive cycles the account fetch has failed. Reset to 0 on any success.
+# Used to raise ONE alert when a credential/outage problem persists (see
+# track_account_fetch_outcome), since the bot otherwise fails closed in
+# silence while market data keeps the log looking healthy.
+_account_failure_streak: int = 0
+_account_failure_alerted: bool = False
 
 # Lock for protecting shared state mutations and save_state
 _state_lock:  asyncio.Lock | None = None
@@ -215,6 +223,50 @@ async def sync_state_with_alpaca():
         logger.warning(f"State sync failed: {e}")
 
 
+async def track_account_fetch_outcome(ok: bool):
+    """Track consecutive account-fetch failures and alert once on a streak.
+
+    get_account_state() returns 0.0 on failure, so a revoked/bad key makes the
+    bot fail closed indefinitely while crypto market data (no credentials
+    needed) keeps the log looking normal -- observed live as a 25+ minute run of
+    {"message": "unauthorized."} with nothing escalated. Alerts ONCE per outage
+    streak (not every cycle) and re-arms after a success.
+    """
+    global _account_failure_streak, _account_failure_alerted
+
+    if ok:
+        if _account_failure_alerted:
+            logger.info("[OK] Account fetch recovered -- entries re-enabled")
+        _account_failure_streak = 0
+        _account_failure_alerted = False
+        return
+
+    _account_failure_streak += 1
+    threshold = ACCOUNT_FAILURE_ALERT_THRESHOLD
+    if threshold <= 0 or _account_failure_alerted:
+        return
+    if _account_failure_streak < threshold:
+        return
+
+    _account_failure_alerted = True
+    logger.error(
+        f"[ALERT] Account fetch failed {_account_failure_streak} cycles in a row -- "
+        f"bot cannot trade (fail-closed). Check Alpaca credentials "
+        f"(APCA_API_KEY_ID / APCA_API_SECRET_KEY) and the paper/live flag."
+    )
+    # send_discord_alert logs and swallows its own failures, so no wrapper here.
+    await send_discord_alert(
+        title="[ALERT] Alpaca account fetch failing",
+        description=(
+            f"**Consecutive failed cycles:** {_account_failure_streak}\n"
+            f"The bot is failing closed and cannot open positions.\n"
+            f"Likely cause: invalid/revoked API key, or a paper/live "
+            f"key vs `APCA_API_PAPER` mismatch."
+        ),
+        color=0xFF0000,
+    )
+
+
 async def run():
     global start_equity
 
@@ -260,8 +312,19 @@ async def run():
 
             # ── Account state ──────────────────────────────────────────────
             equity, buying_power, cash = await get_account_state()
+            # Arm the drawdown baseline ONLY on a successful fetch. equity==0.0
+            # is get_account_state()'s failure sentinel, so latching it would
+            # pin start_equity to 0 for the whole process lifetime and (via the
+            # start_equity > 0 guard below) permanently disarm the
+            # MAX_DRAWDOWN_STOP kill switch -- including after auth recovers.
             if start_equity is None:
-                start_equity = equity
+                if equity > 0:
+                    start_equity = equity
+                else:
+                    logger.warning(
+                        "[!] Account fetch failed -- drawdown baseline not armed "
+                        "(MAX_DRAWDOWN_STOP inactive until it is)"
+                    )
 
             try:
                 await asyncio.to_thread(report_equity, BOT_NAME, equity)
@@ -279,6 +342,11 @@ async def run():
             if not positions_ok:
                 logger.error("[!] Positions fetch failed -- no entries this cycle (fail-closed)")
                 current_positions = {}
+
+            # Track account/positions fetch health so a persistent credential or
+            # outage problem is escalated once instead of failing closed silently.
+            # The positions fetch is the stricter signal: it gates ALL entries.
+            await track_account_fetch_outcome(equity > 0 and positions_ok)
 
             # ── Reconcile entry_times with live Alpaca positions ────────────
             # sync_state_with_alpaca() only ran once at startup, so entry_times
@@ -374,7 +442,13 @@ async def run():
                     f"({(computed_equity - equity)/equity*100:+.2f}%)"
                 )
 
-            drawdown = (equity - start_equity) / start_equity if start_equity > 0 else 0.0
+            # start_equity is None until a successful account fetch arms the
+            # baseline; without this guard the subtraction below would raise
+            # TypeError and abort the whole cycle.
+            if start_equity and start_equity > 0:
+                drawdown = (equity - start_equity) / start_equity
+            else:
+                drawdown = 0.0
 
             logger.info(
                 f"[CHART] Equity: ${equity:,.2f} | BP: ${buying_power:,.2f} | "
