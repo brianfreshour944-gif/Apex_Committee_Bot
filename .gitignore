@@ -17,3 +17,6 @@ committee_heartbeat.txt
 
 # OS
 .DS_Store
+
+# Agent / editor local state (not part of the bot)
+.openhands/
