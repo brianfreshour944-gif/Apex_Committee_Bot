@@ -52,7 +52,7 @@ import os
 import statistics
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 
@@ -109,6 +109,7 @@ class Trade:
     net: float
     reason: str
     confidence: float
+    held_hours: float
 
 
 @dataclass
@@ -117,8 +118,8 @@ class Stats:
     equity_curve: list = field(default_factory=list)
 
 
-def fetch_bars(client, symbol, days):
-    end = datetime.now(timezone.utc) - timedelta(days=1)
+def fetch_bars(client, symbol, days, offset_days=0):
+    end = datetime.now(UTC) - timedelta(days=1 + offset_days)
     start = end - timedelta(days=days)
     r = client.get_crypto_bars(CryptoBarsRequest(
         symbol_or_symbols=symbol,
@@ -159,7 +160,7 @@ async def decide_all(snap):
     ))
 
 
-def check_exit(pos, price, bar, ind):
+def check_exit(pos, price, bar, ind, max_hold_hours=None):
     """Replicates main.py's mechanical exit ladder. Returns (reason, peak)."""
     peak = max(pos.peak_price, price)
     pnl_pct = (price - pos.entry_price) / pos.entry_price
@@ -185,12 +186,14 @@ def check_exit(pos, price, bar, ind):
         return f"Take profit +{pnl_pct*100:.2f}%", peak
     if price < trailing_stop_price and peak > pos.entry_price:
         return f"Trailing stop (peak {peak:.2f})", peak
-    if held_h >= config.MAX_HOLD_HOURS:
+    mh = config.MAX_HOLD_HOURS if max_hold_hours is None else max_hold_hours
+    if held_h >= mh:
         return f"Max hold {held_h:.1f}h", peak
     return None, peak
 
 
-async def replay_symbol(symbol, df, starting_equity, sentinel, min_conf=0.0):
+async def replay_symbol(symbol, df, starting_equity, sentinel, min_conf=0.0,
+                        max_hold_hours=None, warmup=None):
     st = Stats()
     pos = None
     realized = 0.0
@@ -204,7 +207,8 @@ async def replay_symbol(symbol, df, starting_equity, sentinel, min_conf=0.0):
     pending = None
     pf = {}
 
-    for i in range(WARMUP, len(df) - 1):
+    start = WARMUP if warmup is None else warmup
+    for i in range(start, len(df) - 1):
         ts = df.index[i]
         sub = df.iloc[:i + 1]
         ind = compute_indicators(sub)
@@ -237,7 +241,8 @@ async def replay_symbol(symbol, df, starting_equity, sentinel, min_conf=0.0):
             equity = starting_equity + realized
             st.trades.append(Trade(
                 symbol, pos.entry_time, ts, pos.entry_price, fill, pos.qty,
-                gross, total_fee, net, pf["reason"], pos.confidence))
+                gross, total_fee, net, pf["reason"], pos.confidence,
+                (i - pos.entry_bar) / BARS_PER_HOUR))
             if net < 0:
                 sentinel.register_loss(symbol)
             else:
@@ -251,7 +256,7 @@ async def replay_symbol(symbol, df, starting_equity, sentinel, min_conf=0.0):
 
         # ── 2. EXIT evaluation on this bar's close ──────────────────────────
         if pos is not None:
-            reason, peak = check_exit(pos, price, i, ind)
+            reason, peak = check_exit(pos, price, i, ind, max_hold_hours)
             pos.peak_price = peak
             if reason is None:
                 snap = build_snapshot(symbol, df, i, True, pos, equity, regime, ind)
@@ -310,7 +315,8 @@ async def replay_symbol(symbol, df, starting_equity, sentinel, min_conf=0.0):
         equity = starting_equity + realized
         st.trades.append(Trade(symbol, pos.entry_time, last_ts, pos.entry_price,
                                fill, pos.qty, gross, total_fee, net,
-                               "Final unwind (open at end)", pos.confidence))
+                               "Final unwind (open at end)", pos.confidence,
+                               (len(df) - 1 - pos.entry_bar) / BARS_PER_HOUR))
         st.equity_curve.append((last_ts, equity))
 
     return st.trades, st.equity_curve, n
@@ -360,12 +366,17 @@ async def main():
     ap.add_argument("--equity", type=float, default=100000.0)
     ap.add_argument("--min-conf", type=float, default=0.0,
                     help="skip BUY entries below this committee confidence")
+    ap.add_argument("--max-hold", type=float, default=None,
+                    help="override MAX_HOLD_HOURS for the exit ladder")
+    ap.add_argument("--offset-days", type=int, default=0,
+                    help="shift the data window back N days (walk-forward)")
     args = ap.parse_args()
 
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     client = CryptoHistoricalDataClient()
 
     results, all_trades = [], []
+    trades_out = []
     print(f"\n{'='*78}")
     print(f"ENTRY/EXIT BACKTEST — next-open fills, real bars, {args.days}d, "
           f"equity ${args.equity:,.0f}")
@@ -377,13 +388,13 @@ async def main():
 
     for sym in symbols:
         try:
-            df = fetch_bars(client, sym, args.days)
-        except Exception as e:
+            df = fetch_bars(client, sym, args.days, args.offset_days)
+        except Exception as e:  # noqa: BLE001 - one bad symbol must not abort the run
             print(f"{sym}: fetch failed: {e}")
             continue
         sentinel = Sentinel()
         trades, curve, n = await replay_symbol(
-            sym, df, args.equity, sentinel, args.min_conf)
+            sym, df, args.equity, sentinel, args.min_conf, args.max_hold)
 
         first = float(df["close"].iloc[WARMUP])
         last = float(df["close"].iloc[-1])
@@ -391,6 +402,16 @@ async def main():
 
         results.append(summarize(sym, trades, curve, args.equity, bh))
         all_trades.extend(trades)
+        for t in trades:
+            trades_out.append({
+                "symbol": t.symbol,
+                "entry_time": t.entry_time.isoformat(),
+                "exit_time": t.exit_time.isoformat(),
+                "entry_price": t.entry_price, "exit_price": t.exit_price,
+                "qty": t.qty, "gross": t.gross, "fees": t.fees, "net": t.net,
+                "reason": t.reason, "confidence": t.confidence,
+                "held_hours": t.held_hours,
+            })
         r = results[-1]
         print(f"\n--- {sym} ({len(df)} bars, {n} evaluated) ---")
         print(f"   trades={r['trades']} win_rate={r['win_rate']}% "
@@ -418,14 +439,22 @@ async def main():
             print("NO TRADES")
         print(f"{'='*78}")
 
-    out = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        f"backtest_entry_exit_d{args.days}_eq{int(args.equity)}_mc{args.min_conf}.json",
-    )
-    with open(out, "w") as f:
-        json.dump({"params": vars(args), "results": results}, f, indent=2)
+    out = _write_results(args, results, trades_out)
     print(f"\nwrote {out}")
     return results
+
+
+def _write_results(args, results, trades_out):
+    """Sync helper so the async runner never does blocking file I/O."""
+    out = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        f"backtest_entry_exit_d{args.days}_eq{int(args.equity)}_mc{args.min_conf}"
+        f"_mh{args.max_hold}_off{args.offset_days}.json",
+    )
+    with open(out, "w") as f:
+        json.dump({"params": vars(args), "results": results,
+                   "trades": trades_out}, f, indent=2)
+    return out
 
 
 if __name__ == "__main__":

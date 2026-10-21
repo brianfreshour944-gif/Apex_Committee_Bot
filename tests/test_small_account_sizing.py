@@ -22,6 +22,7 @@ Run:  PYTHONPATH=<repo> python tests/test_small_account_sizing.py
 """
 
 import os
+
 os.environ.setdefault("APCA_API_KEY_ID", "test")
 os.environ.setdefault("APCA_API_SECRET_KEY", "test")
 
