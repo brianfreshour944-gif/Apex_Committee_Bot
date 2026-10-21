@@ -1,0 +1,251 @@
+{
+  "ma200": {
+    "days": 5260,
+    "start": "2005-11-17T00:00:00",
+    "end": "2026-10-16T00:00:00",
+    "portfolio": {
+      "bars": 5260,
+      "years": 20.87,
+      "total_return": 2.712,
+      "cagr": 0.0649,
+      "ann_vol": 0.0903,
+      "sharpe": 0.741,
+      "max_drawdown": -0.1419,
+      "exposure": 1.0
+    },
+    "buy_hold": {
+      "bars": 5260,
+      "years": 20.87,
+      "total_return": 6.1897,
+      "cagr": 0.0991,
+      "ann_vol": 0.1546,
+      "sharpe": 0.689,
+      "max_drawdown": -0.4138,
+      "exposure": 1.0
+    },
+    "per_asset": {
+      "SPY": {
+        "sharpe": 0.741,
+        "cagr": 0.0812,
+        "exposure": 0.77,
+        "max_dd": -0.212,
+        "n_rt": 65.0
+      },
+      "QQQ": {
+        "sharpe": 0.788,
+        "cagr": 0.1142,
+        "exposure": 0.779,
+        "max_dd": -0.2685,
+        "n_rt": 64.0
+      },
+      "IWM": {
+        "sharpe": 0.376,
+        "cagr": 0.0454,
+        "exposure": 0.675,
+        "max_dd": -0.2771,
+        "n_rt": 90.0
+      },
+      "DIA": {
+        "sharpe": 0.582,
+        "cagr": 0.0601,
+        "exposure": 0.782,
+        "max_dd": -0.216,
+        "n_rt": 82.0
+      },
+      "EFA": {
+        "sharpe": 0.4,
+        "cagr": 0.0428,
+        "exposure": 0.685,
+        "max_dd": -0.2811,
+        "n_rt": 81.0
+      },
+      "EEM": {
+        "sharpe": 0.287,
+        "cagr": 0.0344,
+        "exposure": 0.63,
+        "max_dd": -0.4426,
+        "n_rt": 101.0
+      },
+      "GLD": {
+        "sharpe": 0.573,
+        "cagr": 0.0771,
+        "exposure": 0.657,
+        "max_dd": -0.3445,
+        "n_rt": 81.0
+      },
+      "TLT": {
+        "sharpe": 0.041,
+        "cagr": -0.0016,
+        "exposure": 0.545,
+        "max_dd": -0.4729,
+        "n_rt": 120.0
+      }
+    }
+  },
+  "breakout20": {
+    "days": 5260,
+    "start": "2005-11-17T00:00:00",
+    "end": "2026-10-16T00:00:00",
+    "portfolio": {
+      "bars": 5260,
+      "years": 20.87,
+      "total_return": 1.0793,
+      "cagr": 0.0357,
+      "ann_vol": 0.07,
+      "sharpe": 0.536,
+      "max_drawdown": -0.1432,
+      "exposure": 1.0
+    },
+    "buy_hold": {
+      "bars": 5260,
+      "years": 20.87,
+      "total_return": 6.1897,
+      "cagr": 0.0991,
+      "ann_vol": 0.1546,
+      "sharpe": 0.689,
+      "max_drawdown": -0.4138,
+      "exposure": 1.0
+    },
+    "per_asset": {
+      "SPY": {
+        "sharpe": 0.563,
+        "cagr": 0.048,
+        "exposure": 0.536,
+        "max_dd": -0.2581,
+        "n_rt": 133.0
+      },
+      "QQQ": {
+        "sharpe": 0.593,
+        "cagr": 0.0619,
+        "exposure": 0.513,
+        "max_dd": -0.286,
+        "n_rt": 139.0
+      },
+      "IWM": {
+        "sharpe": 0.168,
+        "cagr": 0.0132,
+        "exposure": 0.451,
+        "max_dd": -0.3914,
+        "n_rt": 137.0
+      },
+      "DIA": {
+        "sharpe": 0.482,
+        "cagr": 0.0377,
+        "exposure": 0.509,
+        "max_dd": -0.2644,
+        "n_rt": 133.0
+      },
+      "EFA": {
+        "sharpe": 0.1,
+        "cagr": 0.005,
+        "exposure": 0.478,
+        "max_dd": -0.3943,
+        "n_rt": 145.0
+      },
+      "EEM": {
+        "sharpe": 0.275,
+        "cagr": 0.0288,
+        "exposure": 0.437,
+        "max_dd": -0.304,
+        "n_rt": 122.0
+      },
+      "GLD": {
+        "sharpe": 0.385,
+        "cagr": 0.0401,
+        "exposure": 0.408,
+        "max_dd": -0.2694,
+        "n_rt": 125.0
+      },
+      "TLT": {
+        "sharpe": 0.263,
+        "cagr": 0.0199,
+        "exposure": 0.373,
+        "max_dd": -0.22,
+        "n_rt": 114.0
+      }
+    }
+  },
+  "ma100": {
+    "days": 5260,
+    "start": "2005-11-17T00:00:00",
+    "end": "2026-10-16T00:00:00",
+    "portfolio": {
+      "bars": 5260,
+      "years": 20.87,
+      "total_return": 2.3632,
+      "cagr": 0.0598,
+      "ann_vol": 0.0866,
+      "sharpe": 0.715,
+      "max_drawdown": -0.1536,
+      "exposure": 1.0
+    },
+    "buy_hold": {
+      "bars": 5260,
+      "years": 20.87,
+      "total_return": 6.1897,
+      "cagr": 0.0991,
+      "ann_vol": 0.1546,
+      "sharpe": 0.689,
+      "max_drawdown": -0.4138,
+      "exposure": 1.0
+    },
+    "per_asset": {
+      "SPY": {
+        "sharpe": 0.77,
+        "cagr": 0.0819,
+        "exposure": 0.742,
+        "max_dd": -0.1903,
+        "n_rt": 104.0
+      },
+      "QQQ": {
+        "sharpe": 0.609,
+        "cagr": 0.0795,
+        "exposure": 0.739,
+        "max_dd": -0.3059,
+        "n_rt": 128.0
+      },
+      "IWM": {
+        "sharpe": 0.341,
+        "cagr": 0.0402,
+        "exposure": 0.659,
+        "max_dd": -0.3529,
+        "n_rt": 134.0
+      },
+      "DIA": {
+        "sharpe": 0.534,
+        "cagr": 0.0518,
+        "exposure": 0.724,
+        "max_dd": -0.2552,
+        "n_rt": 133.0
+      },
+      "EFA": {
+        "sharpe": 0.447,
+        "cagr": 0.0475,
+        "exposure": 0.651,
+        "max_dd": -0.2417,
+        "n_rt": 111.0
+      },
+      "EEM": {
+        "sharpe": 0.407,
+        "cagr": 0.0543,
+        "exposure": 0.603,
+        "max_dd": -0.3176,
+        "n_rt": 135.0
+      },
+      "GLD": {
+        "sharpe": 0.492,
+        "cagr": 0.0623,
+        "exposure": 0.62,
+        "max_dd": -0.3957,
+        "n_rt": 128.0
+      },
+      "TLT": {
+        "sharpe": 0.151,
+        "cagr": 0.0107,
+        "exposure": 0.544,
+        "max_dd": -0.3981,
+        "n_rt": 146.0
+      }
+    }
+  }
+}
