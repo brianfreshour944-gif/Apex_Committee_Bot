@@ -237,3 +237,38 @@ See reports/BACKTEST_ENTRY_EXIT.md for the full write-up.
 - `tests/test_stress_market_drops.py::print_summary()` is called per-suite; it assumes `drop_pct` may be None (trailing scenarios) — keep the None guard.
 - Test-scenario labels must match actual price geometry (a "pullback to entry" scenario with price above its trail line correctly HOLDs).
 - Bot version string: `2026-07-21-r2` / `Apex_Committee_v1`.
+
+## Transformer IC study (2026-10-21) — reports/transformer_ic/
+Question: does Brain 1 (`GrokGQA_Transformer`, 50% committee weight) carry
+measurable predictive signal? Method: samples built from the REAL
+`feature_engineering.add_features` over real Alpaca 15m bars (BTC/ETH/SOL,
+2022-10-21→2026-10-19, X=(379522,32,11)), causality-verified; label = forward
+return in bps; purged chronological split; IC = mean **per-symbol** Spearman;
+block-bootstrap CIs; block-permutation null; controls (random, ridge,
+momentum, shuffled-label model); cost = 90bps round trip.
+FINDINGS:
+- Shipped model: small but significant, sign-stable IC at 15m–120m
+  (+0.026..+0.060 across disjoint train/val/test) and +0.036 at 8h. Best
+  long/short spread +11bps vs 90bps cost → ~12x short. NOT tradeable.
+- At 8h the shipped IC flips sign across blocks (train +0.019, val -0.031,
+  test +0.044) — the horizon the bot actually holds for is the least stable.
+- SAME architecture RETRAINED on forward returns: no out-of-sample IC at any
+  horizon (CIs include zero; 15m significantly NEGATIVE). Ridge on the same
+  features is also ~0. So "retrain the transformer" is not a demonstrated edge.
+- Per-feature IC ceiling: every feature below |0.04| (best `z_return` -0.037 @15m).
+- Controls all ~0 (shuffled-label IC -0.0037, p=0.56) → pipeline clean, no leakage.
+- Shipped IC is NOT plain train contamination (test > train at short horizons).
+KEY METHOD BUG FOUND & PINNED: `stats.block_permutation_null` originally applied
+the resample index to BOTH pred and ret, preserving the pairing → null was a
+no-op (null mean == observed IC, all p≈0.5-0.7). A permutation null must resample
+ONE series only. Also: pooled IC is inflated by between-symbol level differences —
+always use mean per-symbol IC (`stats.mean_symbol_ic`). Both pinned in
+`tests/test_ic_stats.py` (26 checks; tests 8 and 9).
+CAVEAT: the shipped model's IC is either a weak artefact of how
+`grok_gqa_v9_best.pth` was produced (not reproducible here) or too faint for a
+3-epoch CPU run to recover — this study cannot separate the two.
+Reproduce: `PYTHONPATH=<repo> python reports/transformer_ic/experiment.py --horizons 1,2,4,8,24,32 --epochs 3`.
+Env note: sandbox is volatile — `brains/transformer.py` forces
+`torch.set_num_threads(1)` on import (cripples training; override). Full
+experiment ≈90 min CPU; retrain_check ≈90 min. Tests also need `psycopg2-binary`
+and `aiohttp` installed (not in the default env).
