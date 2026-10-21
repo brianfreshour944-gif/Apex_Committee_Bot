@@ -190,7 +190,7 @@ def check_exit(pos, price, bar, ind):
     return None, peak
 
 
-async def replay_symbol(symbol, df, starting_equity, sentinel):
+async def replay_symbol(symbol, df, starting_equity, sentinel, min_conf=0.0):
     st = Stats()
     pos = None
     realized = 0.0
@@ -275,6 +275,12 @@ async def replay_symbol(symbol, df, starting_equity, sentinel):
         if committee.action != "BUY":
             continue
 
+        # Optional cost-aware filter: skip marginal-confidence entries. Every
+        # round trip costs ~0.9% (fee + slippage, both legs), so a low-edge
+        # trade is more likely to be a net loser after costs.
+        if committee.confidence < min_conf:
+            continue
+
         report = sentinel.check(snap, committee)
         if report.veto:
             continue
@@ -352,6 +358,8 @@ async def main():
     ap.add_argument("--days", type=int, default=30)
     ap.add_argument("--symbols", default="BTC/USD,ETH/USD,SOL/USD")
     ap.add_argument("--equity", type=float, default=100000.0)
+    ap.add_argument("--min-conf", type=float, default=0.0,
+                    help="skip BUY entries below this committee confidence")
     args = ap.parse_args()
 
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
@@ -374,7 +382,8 @@ async def main():
             print(f"{sym}: fetch failed: {e}")
             continue
         sentinel = Sentinel()
-        trades, curve, n = await replay_symbol(sym, df, args.equity, sentinel)
+        trades, curve, n = await replay_symbol(
+            sym, df, args.equity, sentinel, args.min_conf)
 
         first = float(df["close"].iloc[WARMUP])
         last = float(df["close"].iloc[-1])
@@ -411,7 +420,7 @@ async def main():
 
     out = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
-        f"backtest_entry_exit_d{args.days}_eq{int(args.equity)}.json",
+        f"backtest_entry_exit_d{args.days}_eq{int(args.equity)}_mc{args.min_conf}.json",
     )
     with open(out, "w") as f:
         json.dump({"params": vars(args), "results": results}, f, indent=2)

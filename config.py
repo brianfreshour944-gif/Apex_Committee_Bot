@@ -22,7 +22,17 @@ class Settings(BaseSettings):
     min_vote_score: float = 0.60
     
     max_single_trade_usd: float = 5000.0
-    min_order_usd: float = 10.0
+    # Minimum order value. This is a BROKER constraint, not a risk preference:
+    # Alpaca rejects crypto BUY orders below $1 notional ("cost basis must be
+    # >= minimal amount of order 1", code 40310000). The old default of $10 was
+    # an invented round number, and on a small account it was fatal: at $100
+    # equity NO sizing tier could reach $10 (10% x $100 = $10 exactly, but the
+    # measured committee BUY confidence ceiling is ~0.74, below the 0.75 tier
+    # needed), so the bot took ZERO trades. Lowered to the real $1 floor.
+    # NOTE: the per-symbol QUANTITY minimum is also checked by Alpaca; at $1
+    # notional the quantity is ~1e-5 BTC, far above the 1e-8 floor, so the
+    # notional floor strictly dominates here.
+    min_order_usd: float = 1.0
     
     stop_loss_pct: float = 0.04
     take_profit_pct: float = 0.06
@@ -40,7 +50,17 @@ class Settings(BaseSettings):
     exit_cooldown_seconds: int = 300
     
     # Fee and slippage
-    fee_rate: float = 0.001  # 0.1% per side (Alpaca crypto default)
+    fee_rate: float = 0.0025  # 0.25% per side: Alpaca crypto Tier-1 TAKER fee
+    # The bot submits LIMIT orders that CROSS the spread to fill immediately
+    # (BUY at price*(1+buffer), SELL at price*(1-buffer)), so both legs are
+    # TAKERS and pay the taker rate, not the 0.15% maker rate. The old default
+    # of 0.001 (0.10%) understated the real cost by 2.5x. 30d volume tier 1.
+    # BEHAVIOURAL EFFECT: this is not purely cosmetic. It is added to
+    # total_fee -> realized_pnl (main.py exit block), and realized_pnl decides
+    # register_loss() vs register_win(). So a more accurate (higher) fee can
+    # flip a marginal winner to a loser and arm the per-symbol sentinel pause.
+    # That is the intended outcome -- the old rate understated cost and let
+    # sub-breakeven trades count as wins.
     sell_slippage_buffer: float = 0.002  # 0.2% slippage buffer for SELL limit orders
     
     sentinel_max_atr_pct: float = 6.0

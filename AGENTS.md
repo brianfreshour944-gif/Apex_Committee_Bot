@@ -175,6 +175,30 @@ NOTE: at the live $100 paper equity the symbol can still be capped to $0 by
 MIN_ORDER_USD=$10 (see the small-equity note below) — that is a config/account
 size issue, NOT this bug, and is now logged rather than silent.
 
+## Small-account fix (2026-10-20) — the bot could not trade at $100 at all
+Found while backtesting. `MIN_ORDER_USD` defaulted to an invented **$10** — NOT
+an Alpaca rule. Alpaca's crypto floor is a **$1 notional minimum** for buys
+(`cost basis must be >= minimal amount of order 1`, code 40310000). At $100
+equity no sizing tier could reach $10 (10% tier = $10 exactly, but the measured
+committee BUY-confidence ceiling is BTC 0.688 / ETH 0.579 / SOL 0.736, all below
+the 0.75 tier), so EVERY entry sized to $0 and the bot took **zero trades in 30
+days while logging nothing wrong**. Three fixes:
+1. `config.min_order_usd` 10.0 -> **1.0** (the real broker floor).
+2. `position_sizing.calculate_trade_size`: when a sentinel cap (0.5/0.6) is what
+   pushes an otherwise-affordable trade below the floor, trade the MINIMUM
+   instead of 0. A risk-REDUCTION mechanism must not silently become
+   "no position". A genuinely unaffordable tier still returns 0.
+3. `sentinel.py` buying-power gate read a hardcoded `10.0`; now reads
+   `MIN_ORDER_USD` from config.
+Also corrected `config.fee_rate` 0.001 -> **0.0025**: the bot's limit orders
+cross the spread so BOTH legs are Alpaca Tier-1 TAKERS (0.25%), not 0.10%. This
+is behavioural, not cosmetic — the fee feeds `realized_pnl`, which decides
+`register_loss()` vs `register_win()`, so the old rate counted sub-breakeven
+trades as wins. Regression: `tests/test_small_account_sizing.py` (17 checks,
+fails on pre-fix code).
+RESULT: $100 account 0 -> 22 trades. But net is still NEGATIVE, so this fixes
+viability, NOT profitability — do not read it as an edge.
+
 ## Backtest harness (2026-10-20) — reports/backtest_entry_exit.py
 First backtest infrastructure in this repo (audits previously flagged its
 absence). Replays the REAL modules — 3 brains, committee, sentinel, sizing, and

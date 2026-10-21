@@ -38,6 +38,24 @@ def calculate_trade_size(
     # Hard limits
     trade_value = min(trade_value, MAX_SINGLE_TRADE_USD)
 
+    # A risk-REDUCTION mechanism must never silently block all trading. On a
+    # small account the tier size is already near the broker minimum, so a
+    # sentinel cap (0.5 / 0.6) could multiply an affordable trade down below
+    # MIN_ORDER_USD and zero it out -- e.g. $100 equity, 2.5% fallback = $2.50,
+    # x 0.60 cap = $1.50, which is still fine, but 0.5 cap at a smaller equity
+    # is not. When the cap is what pushes us under the floor (and the uncapped
+    # tier could have afforded it), trade the minimum instead of nothing: the
+    # cap's intent is "smaller position", not "no position". The uncapped value
+    # is re-checked so a genuinely unaffordable tier still returns 0.
+    if (trade_value < MIN_ORDER_USD and sentinel_cap is not None
+            and min(equity * pct, MAX_SINGLE_TRADE_USD) >= MIN_ORDER_USD):
+        logger.info(
+            f"Size floor: sentinel cap {sentinel_cap:.0%} pushed "
+            f"${trade_value:.2f} below MIN_ORDER_USD ${MIN_ORDER_USD:.2f} "
+            f"— trading the ${MIN_ORDER_USD:.2f} minimum instead of skipping"
+        )
+        trade_value = MIN_ORDER_USD
+
     if trade_value < MIN_ORDER_USD:
         logger.warning(
             f"[WAIT] Sizing skip: ${trade_value:.2f} below MIN_ORDER_USD ${MIN_ORDER_USD:.2f} "

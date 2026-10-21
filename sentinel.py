@@ -8,7 +8,7 @@ from config import (
     logger,
     SENTINEL_MAX_ATR_PCT, SENTINEL_MAX_VOL_MULT,
     MAX_CONSECUTIVE_LOSSES, BLOCKED_ENTRY_REGIMES,
-    SENTINEL_LOSS_COOLDOWN_SECONDS,
+    SENTINEL_LOSS_COOLDOWN_SECONDS, MIN_ORDER_USD,
 )
 from models import MarketSnapshot, CommitteeResult, SentinelReport
 
@@ -115,10 +115,10 @@ class Sentinel:
                 reason=f"[BULL] {symbol}: {losses} consecutive losses — pausing this symbol",
             )
 
-        if committee.action == "BUY" and bp < 10.0:
+        if committee.action == "BUY" and bp < MIN_ORDER_USD:
             return SentinelReport(
                 veto=True,
-                reason=f"💸 Buying power ${bp:.2f} insufficient for minimum order",
+                reason=f"💸 Buying power ${bp:.2f} insufficient for minimum order (${MIN_ORDER_USD:.2f})",
             )
 
         # ── Falling-knife hard block (entry only) ──────────────────────────────

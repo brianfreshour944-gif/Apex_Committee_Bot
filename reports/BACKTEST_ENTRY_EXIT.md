@@ -1,85 +1,110 @@
-# Entry/Exit Backtest — results (2026-10-20)
+# Entry/Exit Backtest — results (2026-10-20, updated after the small-account fixes)
 
 Harness: `reports/backtest_entry_exit.py` (replays the LIVE decision path).
 Data: real Alpaca 15-minute crypto bars, 30 days, credential-free endpoint.
-Fills: next bar's OPEN. Costs: 0.10%/leg fee + 0.20%/leg slippage = **0.60% round trip**.
+Fills: next bar's OPEN. Costs: **0.25%/leg fee (real Alpaca Tier-1 taker) +
+0.20%/leg slippage = 0.90% round trip**.
 
-## Headline: the strategy is fee-bound, not signal-bound
+Two config bugs found and fixed while doing this (see below): an invented $10
+minimum order floor that made a $100 account untradeable, and an understated
+fee rate (0.10% vs the real 0.25%).
 
-| symbol | trades | win% | gross | fees | net | PF | buy&hold | excess |
-|---|---|---|---|---|---|---|---|---|
-| BTC/USD | 6 | 33.3 | +9.23 | 26.06 | **-16.84** | 0.63 | +0.78% | -0.79% |
-| ETH/USD | 9 | 44.4 | -76.14 | 41.00 | **-117.14** | 0.15 | -9.60% | +9.48% |
-| SOL/USD | 19 | 36.8 | +46.78 | 85.26 | **-38.48** | 0.84 | -5.64% | +5.61% |
-| **total** | **34** | **38.2** | **-20.13** | **152.32** | **-172.46** | — | — | — |
+## Headline: fee-bound, and filtering for higher confidence makes it WORSE
 
-Gross PnL is **-$20** on ~$152,000 of traded notional — statistically
-indistinguishable from zero (-0.013%). Fees of **$152** turn that into a
-**-$172** loss. **Fees are 88% of the net loss.** The entry/exit logic is not
-losing money on direction; it is paying a toll on every round trip.
+| run | trades | win% | net | fees |
+|---|---|---|---|---|
+| $100k, no conf filter | 22 | 31.8 | **-$50.99** | $246.00 |
+| $100k, min-conf 0.55 | 6 | 33.3 | **-$145.72** | $69.94 |
+| $100, no conf filter | 22 | 31.8 | **-$0.05** | $0.25 |
 
-## Exit-reason mix (34 trades)
+Same trades at $100k and $100 (sizing is proportional), so the small account is
+not worse *per unit* — it is the same losing profile scaled down. At $100 the
+loss is 5 cents, because the total notional traded is tiny.
 
-- `Max hold 8.0h` — 19 (56%)
-- `Committee SELL override` — 2
-- `Trailing stop` — 1
-- `Stop loss` / `Take profit` — 0 (see caveat below)
+**The important negative result:** raising the entry bar to confidence >= 0.55
+*cuts* trades from 22 to 6 and makes the net result roughly **3x worse**. The
+higher-confidence trades were not better. This refutes the intuitive "trade only
+high-conviction signals" fix — on this sample, confidence is not a useful
+quality filter, and cutting trades just concentrates the cost drag into fewer,
+not-better bets.
 
-The strategy is dominated by the 8-hour time stop. Most trades drift sideways
-until the clock expires, then pay the round-trip cost. **Zero take-profits** in
-30 days: the +6% target is rarely reached in an 8-hour window, so the profit
-side of the strategy is effectively unreachable while the cost side is certain.
+## The two real bugs, and why the $100 account took zero trades
 
-## The $100-account finding (matches the live symptom)
+### Bug 1 — `MIN_ORDER_USD=$10` was invented, and it silently disabled small accounts
 
-Running the same harness at the live **$100** equity: **0 trades in 30 days**,
-on all three symbols. This is the "stays at 0 forever" symptom, and it is a
-config/account-size problem, not a signal problem:
+`$10` is not an Alpaca rule. Alpaca's crypto floor is a **$1 notional minimum**
+for buy orders (`cost basis must be >= minimal amount of order 1`, code
+40310000). At $100 equity:
 
-| conf tier | % equity | equity needed to clear MIN_ORDER_USD=$10 |
-|---|---|---|
-| >= 0.90 | 15.0% | $67 |
-| >= 0.75 | 10.0% | $100 |
-| >= 0.60 | 5.0% | $200 |
-| >= 0.00 | 2.5% | $400 |
+| conf tier | % equity | size | vs old $10 floor |
+|---|---|---|---|
+| >= 0.90 | 15% | $15.00 | passes |
+| >= 0.75 | 10% | $10.00 | exactly at floor |
+| >= 0.60 | 5% | $5.00 | **blocked** |
+| fallback | 2.5% | $2.50 | **blocked** |
 
-At $100 equity a BUY needs conf >= 0.75 to reach $10. The 30-day BUY-confidence
-ceiling measured across symbols is **BTC 0.688 / ETH 0.579 / SOL 0.736** — none
-reach 0.75. So **no entry can ever clear the minimum order size**, regardless of
-signal quality. With a sentinel size cap active (2+ consecutive losses → 60%),
-even conf 0.90 sizes to $0.
+The measured 30-day committee BUY-confidence ceiling is **BTC 0.688 / ETH 0.579
+/ SOL 0.736** — none reach the 0.75 tier. So every entry sized below $10 and was
+zeroed. **The bot took 0 trades in 30 days and the log said nothing was wrong.**
+Fixed: `min_order_usd` default lowered to the real $1 floor.
 
-## Caveats (do not over-read these numbers)
+### Bug 2 — the sentinel's risk cap could turn "smaller" into "nothing"
 
-1. **Symbols replayed independently.** MAX_OPEN_POSITIONS and the aggregate
-   exposure cap are per-symbol here, not portfolio-wide. The total is the sum of
-   three independent runs, not a true portfolio simulation.
-2. **Orderbook gate disabled** — it needs live L2 depth, which has no historical
-   equivalent, and it is a fail-closed VETO. Entries here are therefore slightly
-   *more* permissive than live. Real results would be no better.
-3. **No stop-loss or take-profit exits fired.** Because bars are 15m and fills
-   are at the next open, the ladder is evaluated on bar closes only; the 4% stop
-   and +6% target were not touched in this window (range was too narrow relative
-   to position duration). A different window would exercise them.
-4. **Single 30-day window, single fill model.** No walk-forward, no parameter
-   search, no Monte Carlo. This is one sample, not an edge estimate.
-5. Fill model has no partial fills, no market impact, no funding. Optimistic on
-   size for a $100k book; the fee/slippage toll is the dominant, well-modelled
-   term.
+The sentinel caps size to 50%/60% after ATR spikes or consecutive losses. That
+is a *risk reduction*, but on a small account it multiplied an already-small
+affordable trade below the floor and zeroed it — e.g. $50 equity, fallback tier
+$1.25, x 0.50 cap = $0.63 < $1 → no trade. Fixed: when the cap is what pushes an
+otherwise-affordable trade under the floor, trade the minimum instead of
+nothing. A genuinely unaffordable tier still returns 0.
 
-## What this implies
+### Bug 3 (accuracy) — fee rate understated 2.5x
 
-- **Do not size up to chase signals.** The measured gross edge is ~0. The fix is
-  fewer, larger, longer-held trades (to amortise the 0.60% round trip), or lower
-  costs — not more entries.
-- **The 8h max-hold is doing most of the work and is likely too short** for a
-  +6% target: it converts would-be winners into cost-paying round trips.
-- **The $100 account cannot trade this configuration at all.** Either raise the
-  paper balance (Alpaca paper normally starts at $100k) or lower `MIN_ORDER_USD`
-  deliberately, accepting that every fill is then a large % of equity.
+`fee_rate` was 0.001 (0.10%). The bot submits limit orders that *cross the
+spread* to fill immediately, so both legs are **takers** at Alpaca Tier 1 =
+**0.25%**. Corrected to 0.0025. Not cosmetic: the fee feeds `realized_pnl`, which
+decides `register_loss()` vs `register_win()`, so the old rate let sub-breakeven
+trades count as wins.
+
+## Result of the fixes
+
+- **$100 account: 0 trades → 22 trades.** The bot is no longer silently inert.
+- Every sizing tier now clears the floor at $100 (from $2.50 to $15.00).
+- Sentinel cap floors to the minimum rather than skipping.
+
+## What this does NOT mean
+
+- **It does not make the bot profitable.** Net is still negative (-$50.99 at
+  $100k on 22 trades). Fixing the floor made the bot *able to trade*; it did not
+  give it an edge.
+- **It is not an edge estimate.** One 30-day window, one fill model, no
+  walk-forward, no Monte Carlo, no significance test. 22 trades is far too few
+  to distinguish skill from noise.
+- **The confidence-filter result is a single-sample finding.** It says confidence
+  did not separate winners from losers *in this window*. Suggestive, not
+  conclusive.
+
+## Caveats
+
+1. Symbols replayed **independently** — max-positions and the exposure cap are
+   per-symbol, not portfolio-wide. The total is a sum of three runs.
+2. **Orderbook gate disabled** (no historical L2). Entries are slightly *more*
+   permissive than live, so live results would be no better.
+3. **Zero take-profits** fired in 30 days; most exits were the 8h max hold. The
+   +6% target is rarely reachable in an 8h window, so the cost side is certain
+   while the profit side mostly is not. Unchanged by these fixes — worth revisiting.
+4. 15m bars: when a bar spans both stop and target, the stop is assumed first.
+
+## Honest bottom line for a small account
+
+Making a $100 account tradeable is a genuine fix — it removes a config bug that
+silently disabled the bot. But it does **not** make the bot win, and the
+"be more selective" instinct made things worse on this data. The binding
+constraint is the **0.90% round-trip cost against a ~0 gross edge**. Until there
+is a measured gross edge that clears that cost, small-account profitability is
+not something this backtest can demonstrate.
 
 Reproduce:
 ```
-PYTHONPATH=<repo> python reports/backtest_entry_exit.py --days 30
 PYTHONPATH=<repo> python reports/backtest_entry_exit.py --days 30 --equity 100
+PYTHONPATH=<repo> python reports/backtest_entry_exit.py --days 30 --min-conf 0.55
 ```
