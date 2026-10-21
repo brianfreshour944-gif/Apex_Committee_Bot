@@ -80,7 +80,24 @@ from sentinel import Sentinel
 
 WARMUP = 120
 BARS_PER_HOUR = 4
+# Effective per-leg slippage and fee. TAKER is the live behaviour: the bot's
+# limit orders cross the spread to fill immediately. MAKER is a hypothetical
+# UPPER BOUND: resting limit orders that fill AT mid with no spread cost. Maker
+# fills in reality suffer adverse selection (you only fill when price moves
+# against you) and partial fills, so this mode is optimistic by construction --
+# it answers "could this ever work?" not "will this work?".
 SLIPPAGE = config.SELL_SLIPPAGE_BUFFER
+FEE = config.FEE_RATE
+
+
+def set_cost_mode(mode):
+    global SLIPPAGE, FEE
+    if mode == "maker":
+        SLIPPAGE = 0.0
+        FEE = 0.0015   # Alpaca Tier-1 maker
+    else:
+        SLIPPAGE = config.SELL_SLIPPAGE_BUFFER
+        FEE = config.FEE_RATE
 
 
 @dataclass
@@ -136,7 +153,7 @@ def fetch_bars(client, symbol, days, offset_days=0):
 
 
 def fee_for(price, qty):
-    return price * qty * config.FEE_RATE
+    return price * qty * FEE
 
 
 def build_snapshot(symbol, df, i, has_pos, pos, equity, regime, ind):
@@ -370,8 +387,11 @@ async def main():
                     help="override MAX_HOLD_HOURS for the exit ladder")
     ap.add_argument("--offset-days", type=int, default=0,
                     help="shift the data window back N days (walk-forward)")
+    ap.add_argument("--cost-mode", choices=["taker", "maker"], default="taker",
+                    help="taker (live, crosses spread) or maker (optimistic bound)")
     args = ap.parse_args()
 
+    set_cost_mode(args.cost_mode)
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     client = CryptoHistoricalDataClient()
 
@@ -380,8 +400,8 @@ async def main():
     print(f"\n{'='*78}")
     print(f"ENTRY/EXIT BACKTEST — next-open fills, real bars, {args.days}d, "
           f"equity ${args.equity:,.0f}")
-    print(f"costs: fee {config.FEE_RATE*100:.3f}%/leg + slip {SLIPPAGE*100:.3f}%/leg "
-          f"= {2*(config.FEE_RATE+SLIPPAGE)*100:.3f}% round trip")
+    print(f"cost mode: {args.cost_mode.upper()} | fee {FEE*100:.3f}%/leg + "
+          f"slip {SLIPPAGE*100:.3f}%/leg = {2*(FEE+SLIPPAGE)*100:.3f}% round trip")
     print("orderbook gate: DISABLED (no historical L2) | fills: next bar open")
     print("symbols replayed INDEPENDENTLY (not a true portfolio sim)")
     print(f"{'='*78}")
@@ -449,7 +469,7 @@ def _write_results(args, results, trades_out):
     out = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         f"backtest_entry_exit_d{args.days}_eq{int(args.equity)}_mc{args.min_conf}"
-        f"_mh{args.max_hold}_off{args.offset_days}.json",
+        f"_mh{args.max_hold}_off{args.offset_days}_{args.cost_mode}.json",
     )
     with open(out, "w") as f:
         json.dump({"params": vars(args), "results": results,

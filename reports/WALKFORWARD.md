@@ -95,6 +95,46 @@ would need to overcome.
 - **Find a real gross edge** before tuning exits. Everything measured here says
   the exits are not where the problem is.
 
+## 4. Maker-order hypothesis: NOT refuted, NOT confirmed
+
+The only lever with arithmetic headroom is cost. So I tested the optimistic
+extreme: what if EVERY trade filled at mid (no spread) with maker fees?
+
+Added `--cost-mode maker` to the harness (0.15%/leg fee, zero slippage) and ran
+the same 3 disjoint windows. `--cost-mode taker` reproduces the known baseline
+exactly (22 trades, -$50.99), confirming the refactor is behaviour-preserving.
+
+| mode | trades | net | mean/trade | t | 95% CI | gross/trade |
+|---|---|---|---|---|---|---|
+| taker (live) | 62 | -$803.45 | -$12.96 | -3.82 | [-19.39, -6.27] | -$2.30 |
+| maker (optimistic) | 142 | -$305.26 | -$2.15 | -0.92 | [-6.65, +2.56] | +$4.70 |
+
+Per window, maker beats taker in **all three**:
+`off0 -21.23 vs -50.99 | off30 -273.83 vs -375.21 | off60 -10.19 vs -377.25`
+
+**What this shows:** cost is genuinely the dominant factor. Halving the round
+trip flips *gross* per trade from -$2.30 to +$4.70 and cuts the per-trade loss
+6x. The direction is right.
+
+**What this does NOT show — and I want to be precise:**
+- The maker CI **[-6.65, +2.56] includes zero.** Maker is "not proven negative,"
+  which is *not* the same as "proven profitable." Mean is still -$2.15/trade.
+- Maker mode is **optimistic by construction**: 100% fill at mid, zero spread
+  cost, no adverse selection. Real resting limit orders fill *preferentially
+  when price moves against you* — you get filled on the trades you'd rather not
+  have. So the true maker result is worse than this bound, and this bound is
+  already negative.
+- Maker mode is **not a like-for-like counterfactual.** It takes 2.3x more trades
+  (142 vs 62). Cause: costs feed `realized_pnl` -> `register_loss/win`, so
+  cheaper trades register as wins more often, the sentinel loss-pause arms less,
+  and the bot re-enters sooner. It is a *different trajectory*, not the same
+  trades re-priced.
+
+**Verdict:** unlike the max-hold hypothesis (cleanly refuted), the cost
+hypothesis survives but is unproven. Cost reduction is the right direction; the
+optimistic upper bound still does not reach profitability. A real answer needs a
+maker-fill model with fill probability and adverse selection, not this bound.
+
 ## Honest limits
 
 - One data source (Alpaca 15m crypto bars), ~90 days total, 3 symbols.
