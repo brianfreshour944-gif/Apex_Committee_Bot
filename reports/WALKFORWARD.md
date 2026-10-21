@@ -135,6 +135,50 @@ hypothesis survives but is unproven. Cost reduction is the right direction; the
 optimistic upper bound still does not reach profitability. A real answer needs a
 maker-fill model with fill probability and adverse selection, not this bound.
 
+## 5. Small-account ($100) walk-forward: same percentage, so "start small" changes nothing
+
+The live account is ~$100, and the ask was whether starting small helps. Ran the
+same 3 disjoint windows at $100 equity.
+
+| window | $100k net | % | $100 net | % |
+|---|---|---|---|---|
+| 0-30d | -$50.99 | -0.051% | -$0.05 | -0.051% |
+| 30-60d | -$375.21 | -0.375% | -$0.31 | -0.306% |
+| 60-90d | -$377.25 | -0.377% | -$0.35 | -0.345% |
+| **total** | **-$803.45** | **-0.803%** | **-$0.70** | **-0.702%** |
+
+**62 trades at both sizes — the identical trade list, scaled.**
+
+**The answer to "does starting small help?" is no, but for a precise reason.**
+Position sizing is purely proportional (`pct * equity`), and Alpaca's crypto fee
+is a percentage with **no per-order minimum**. So the $100 account loses the
+*same fraction* of its equity as the $100k account — 0.70% vs 0.80% over 90
+days. Starting small does not improve the edge; it just makes the loss small in
+dollars. That is a real answer, and it is not the answer the premise hoped for:
+**there is no small-account advantage here, because there is no fixed cost to
+amortise.**
+
+Note the sign of the two claims now on record:
+- Small accounts are **not worse per unit** than large ones (this section).
+- But the bot could not trade at all at $100 before the `MIN_ORDER_USD` fix —
+  a *config* bug, not a market effect. Fixing it made the bot viable; it did not
+  make it profitable.
+
+### What the harness still does NOT model at $100
+
+- **No per-order qty rounding.** Live BUY submits unrounded qty while SELL
+  floors to 1e-8 (`orders.py`), so the two legs are not symmetric. Continuous
+  qty here slightly favours the backtest.
+- **Symbols replayed independently**, so the 30% portfolio exposure cap is
+  applied per-symbol, not across the portfolio. At $100 the whole account is
+  only $100, so a *true* portfolio sim would hit the cap more often than this
+  harness shows — this run is therefore optimistic on that axis too.
+- No minimum-notional rejections modelled at the order level.
+
+Neither effect is large enough to flip a -0.70% 90-day return to positive, but
+both point the same direction: the live small-account result would be **no
+better** than this, and plausibly slightly worse.
+
 ## Honest limits
 
 - One data source (Alpaca 15m crypto bars), ~90 days total, 3 symbols.

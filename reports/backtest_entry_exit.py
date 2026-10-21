@@ -469,7 +469,11 @@ def _write_results(args, results, trades_out):
     out = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         f"backtest_entry_exit_d{args.days}_eq{int(args.equity)}_mc{args.min_conf}"
-        f"_mh{args.max_hold}_off{args.offset_days}_{args.cost_mode}.json",
+        f"_mh{args.max_hold}_off{args.offset_days}"
+        # Taker is the default and predates --cost-mode, so its files carry no
+        # suffix (keeps existing artifacts' names stable). Non-default modes are
+        # tagged so maker runs cannot be mistaken for live-equivalent results.
+        + ("" if args.cost_mode == "taker" else f"_{args.cost_mode}") + ".json",
     )
     with open(out, "w") as f:
         json.dump({"params": vars(args), "results": results,
