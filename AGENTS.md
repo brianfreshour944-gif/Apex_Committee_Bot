@@ -272,3 +272,36 @@ Env note: sandbox is volatile — `brains/transformer.py` forces
 `torch.set_num_threads(1)` on import (cripples training; override). Full
 experiment ≈90 min CPU; retrain_check ≈90 min. Tests also need `psycopg2-binary`
 and `aiohttp` installed (not in the default env).
+## Low-turnover daily trend study (2026-10-21) — reports/trend_daily/
+Tests the opposite design to the intraday transformer: long-only daily trend
+filters, to see if a low-turnover rule has an edge the intraday bot lacks.
+Data: yfinance daily (equities/ETFs/single names — SURVIVORSHIP BIAS, and
+BTC-USD), 12 assets, FIXED end date 2026-10-19, up to 31y bars (SPY/AAPL/MSFT
+from 1995). Cache is gitignored (`reports/*/cache/`).
+Rules: ma50/ma100/ma200 (close > trailing SMA), breakout20 (prior 20d-high
+entry / 10d-low exit). Long-only, {0,1}. Engine: close-to-close, decision at
+bar i's close held during bar i+1 (1-bar lag), cost per SIDE, terminal
+liquidation charged so buy&hold counts as exactly 1 round trip.
+FINDINGS (the honest headline):
+- NO return edge. 0 of 48 rule-asset pairs beat buy&hold at 95% (paired block
+  bootstrap on the daily DIFFERENCE — common beta cancels, the powerful test);
+  20 of 48 significantly UNDERPERFORM; 28 inconclusive.
+- REAL risk finding: equal-weight 8-ETF basket, ma200 cuts maxDD 41% -> 14%
+  and lifts Sharpe +0.69 -> +0.74, but CAGR 9.9% -> 6.5%. It changes the shape
+  of the return, not the rate. Per-asset DD cuts are large (SPY -55%->-29%).
+- Timing edge thin/concentrated: only 7/48 matched-exposure random-entry tests
+  p<0.05 (BTC ma50/ma100/breakout20, NVDA ma200/ma50, AAPL ma200).
+- Walk-forward rule SELECTION beats B&H OOS in 5/12 (SPY,EFA,AAPL,NVDA,BTC);
+  ma200 chosen in 28/72 windows (most robust) but selection is unstable.
+- Cost sensitivity: unlike the intraday case cost is NOT the problem — few
+  round trips (ma200 on BTC = 38 in 16y). The rule loses to buy&hold on return
+  GIVEN UP, not on cost. At 0bps ma200 mean Sharpe is already <= B&H.
+KEY DISTINCTION vs the intraday result: intraday = signal absent, cost kills;
+daily trend = signal present (trend is real) but timing OUT of a rising asset
+forfeits compounding, so it loses to buy&hold on return and only wins on risk.
+Reproduce: `python reports/trend_daily/fetch_daily.py` then `experiment.py` and
+`portfolio.py` (PYTHONPATH=<repo>). tests/test_trend_rules.py = 31 checks
+(no-look-ahead mutation test, cost/lag/terminal-liquidation accounting).
+NOTE: yfinance hourly/daily data has occasional non-RTH or bad stamps; the
+study uses daily closes only. Not a git-commit/PR task originally, but changes
+were committed to main (f0b6fbf).
