@@ -1,0 +1,41 @@
+{
+  "1": {
+    "z_return": -0.03728,
+    "range_position_z": -0.02794,
+    "vwap_z": -0.0177,
+    "signed_flow": -0.01744,
+    "kyle_lambda": 0.00446,
+    "vol_of_vol": -0.00381,
+    "amihud_z": 0.00359,
+    "parkinson_vol": 0.00217,
+    "trade_size_proxy": -0.00204,
+    "garman_klass_vol": 0.00144,
+    "roll_autocorr": 0.00128
+  },
+  "8": {
+    "z_return": -0.01373,
+    "range_position_z": -0.01065,
+    "trade_size_proxy": -0.00308,
+    "garman_klass_vol": 0.00296,
+    "parkinson_vol": 0.00276,
+    "vol_of_vol": 0.00212,
+    "vwap_z": -0.00185,
+    "roll_autocorr": -0.0018,
+    "kyle_lambda": 0.00165,
+    "signed_flow": -0.001,
+    "amihud_z": 3e-05
+  },
+  "32": {
+    "roll_autocorr": 0.01156,
+    "vol_of_vol": -0.00909,
+    "range_position_z": -0.00729,
+    "signed_flow": 0.00637,
+    "parkinson_vol": -0.00569,
+    "garman_klass_vol": -0.00519,
+    "kyle_lambda": 0.00285,
+    "vwap_z": -0.00199,
+    "z_return": -0.00175,
+    "trade_size_proxy": 0.00077,
+    "amihud_z": -0.00049
+  }
+}

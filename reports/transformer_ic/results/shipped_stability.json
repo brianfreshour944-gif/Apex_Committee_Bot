@@ -1,0 +1,115 @@
+{
+  "1": {
+    "train": {
+      "ic": 0.02584,
+      "per_symbol_ic": {
+        "0": 0.02281,
+        "1": 0.0268,
+        "2": 0.02789
+      }
+    },
+    "val": {
+      "ic": 0.01823,
+      "per_symbol_ic": {
+        "0": 0.01821,
+        "1": 0.01563,
+        "2": 0.02086
+      }
+    },
+    "test": {
+      "ic": 0.03329,
+      "per_symbol_ic": {
+        "0": 0.0393,
+        "1": 0.0368,
+        "2": 0.02378
+      }
+    },
+    "mean_ic": 0.02579,
+    "sign_stable_across_blocks": true
+  },
+  "4": {
+    "train": {
+      "ic": 0.02943,
+      "per_symbol_ic": {
+        "0": 0.02805,
+        "1": 0.02597,
+        "2": 0.03428
+      }
+    },
+    "val": {
+      "ic": 0.02088,
+      "per_symbol_ic": {
+        "0": 0.0268,
+        "1": 0.01358,
+        "2": 0.02227
+      }
+    },
+    "test": {
+      "ic": 0.05014,
+      "per_symbol_ic": {
+        "0": 0.06131,
+        "1": 0.04844,
+        "2": 0.04068
+      }
+    },
+    "mean_ic": 0.03348,
+    "sign_stable_across_blocks": true
+  },
+  "8": {
+    "train": {
+      "ic": 0.02585,
+      "per_symbol_ic": {
+        "0": 0.02806,
+        "1": 0.02151,
+        "2": 0.02798
+      }
+    },
+    "val": {
+      "ic": 0.02386,
+      "per_symbol_ic": {
+        "0": 0.0333,
+        "1": 0.01007,
+        "2": 0.0282
+      }
+    },
+    "test": {
+      "ic": 0.05957,
+      "per_symbol_ic": {
+        "0": 0.07545,
+        "1": 0.05294,
+        "2": 0.05031
+      }
+    },
+    "mean_ic": 0.03643,
+    "sign_stable_across_blocks": true
+  },
+  "32": {
+    "train": {
+      "ic": 0.01925,
+      "per_symbol_ic": {
+        "0": 0.02649,
+        "1": -0.00063,
+        "2": 0.0319
+      }
+    },
+    "val": {
+      "ic": -0.03075,
+      "per_symbol_ic": {
+        "0": -0.01461,
+        "1": -0.0518,
+        "2": -0.02583
+      }
+    },
+    "test": {
+      "ic": 0.04374,
+      "per_symbol_ic": {
+        "0": 0.04478,
+        "1": 0.04115,
+        "2": 0.0453
+      }
+    },
+    "mean_ic": 0.01075,
+    "sign_stable_across_blocks": false
+  },
+  "interpretation": "If train IC is not the largest, contamination is ruled out. If the sign moves between blocks, the apparent IC is period-specific noise, not a durable edge."
+}

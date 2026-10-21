@@ -1,0 +1,249 @@
+{
+  "horizons": [
+    1,
+    8
+  ],
+  "epochs": 3,
+  "seed": 0,
+  "started": "2026-10-21T07:23:37.044242+00:00",
+  "runs": {
+    "1": {
+      "shipped": {
+        "ic": 0.033294772361846234,
+        "ci_lo": 0.026716371923531913,
+        "ci_hi": 0.03899260970111881,
+        "p": 0.0,
+        "excludes_zero": true,
+        "per_symbol_ic": {
+          "0": 0.0393,
+          "1": 0.0368,
+          "2": 0.02378
+        },
+        "name": "shipped h=1",
+        "n": 104894,
+        "subperiod_ics": [
+          0.0087,
+          0.0518,
+          0.057,
+          0.0126
+        ],
+        "sign_stable": true,
+        "spread_bps": 1.14,
+        "spread_per_symbol_bps": {
+          "0": 1.02,
+          "1": 0.91,
+          "2": 1.49
+        },
+        "spread_clears_cost": false,
+        "edge": false
+      },
+      "retrained": {
+        "ic": -0.01103992530399517,
+        "ci_lo": -0.016806420152963197,
+        "ci_hi": -0.006706123562821872,
+        "p": 0.0,
+        "excludes_zero": true,
+        "per_symbol_ic": {
+          "0": -0.00708,
+          "1": -0.01337,
+          "2": -0.01267
+        },
+        "name": "retrained h=1",
+        "n": 104894,
+        "subperiod_ics": [
+          -0.017,
+          -0.0054,
+          -0.0136,
+          -0.006
+        ],
+        "sign_stable": true,
+        "spread_bps": -0.26,
+        "spread_per_symbol_bps": {
+          "0": -0.4,
+          "1": -0.28,
+          "2": -0.11
+        },
+        "spread_clears_cost": false,
+        "edge": false
+      },
+      "ridge": {
+        "ic": 0.004883993988454664,
+        "ci_lo": -0.0011625515322482185,
+        "ci_hi": 0.011206747614629574,
+        "p": 0.14,
+        "excludes_zero": false,
+        "per_symbol_ic": {
+          "0": 0.00876,
+          "1": 0.00414,
+          "2": 0.00175
+        },
+        "name": "ridge h=1",
+        "n": 104894,
+        "subperiod_ics": [
+          -0.0112,
+          0.0162,
+          0.003,
+          0.0099
+        ],
+        "sign_stable": false,
+        "spread_bps": 0.32,
+        "spread_per_symbol_bps": {
+          "0": 0.43,
+          "1": 0.39,
+          "2": 0.13
+        },
+        "spread_clears_cost": false,
+        "edge": false
+      },
+      "train_info": {
+        "per_epoch": [
+          {
+            "epoch": 0,
+            "train_loss": 1.02135,
+            "val_ic": -0.00061,
+            "test_ic": -0.01104,
+            "secs": 768.1
+          },
+          {
+            "epoch": 1,
+            "train_loss": 1.00265,
+            "val_ic": -0.01548,
+            "test_ic": -0.02211,
+            "secs": 771.0
+          },
+          {
+            "epoch": 2,
+            "train_loss": 1.00231,
+            "val_ic": -0.00172,
+            "test_ic": -0.00959,
+            "secs": 787.2
+          }
+        ],
+        "best": {
+          "val_ic": -0.0006098204809650105,
+          "epoch": 0,
+          "test_ic_at_best": -0.01103992530399517
+        }
+      }
+    },
+    "8": {
+      "shipped": {
+        "ic": 0.05956719486639354,
+        "ci_lo": 0.04651252187198527,
+        "ci_hi": 0.07399494491235922,
+        "p": 0.0,
+        "excludes_zero": true,
+        "per_symbol_ic": {
+          "0": 0.07545,
+          "1": 0.05294,
+          "2": 0.05031
+        },
+        "name": "shipped h=8",
+        "n": 104888,
+        "subperiod_ics": [
+          -0.0075,
+          0.1145,
+          0.1255,
+          -0.0057
+        ],
+        "sign_stable": false,
+        "spread_bps": 7.93,
+        "spread_per_symbol_bps": {
+          "0": 8.95,
+          "1": 6.81,
+          "2": 8.05
+        },
+        "spread_clears_cost": false,
+        "edge": false
+      },
+      "retrained": {
+        "ic": -0.004211438068133468,
+        "ci_lo": -0.013857741987908956,
+        "ci_hi": 0.00485302660954209,
+        "p": 0.48,
+        "excludes_zero": false,
+        "per_symbol_ic": {
+          "0": -0.00195,
+          "1": -0.00391,
+          "2": -0.00677
+        },
+        "name": "retrained h=8",
+        "n": 104888,
+        "subperiod_ics": [
+          -0.0084,
+          0.0129,
+          -0.0232,
+          0.0085
+        ],
+        "sign_stable": false,
+        "spread_bps": -0.99,
+        "spread_per_symbol_bps": {
+          "0": -0.12,
+          "1": -1.75,
+          "2": -1.08
+        },
+        "spread_clears_cost": false,
+        "edge": false
+      },
+      "ridge": {
+        "ic": 0.006994731177709616,
+        "ci_lo": -0.00116149856640998,
+        "ci_hi": 0.018660302750532907,
+        "p": 0.26666666666666666,
+        "excludes_zero": false,
+        "per_symbol_ic": {
+          "0": 0.01423,
+          "1": -0.0003,
+          "2": 0.00705
+        },
+        "name": "ridge h=8",
+        "n": 104888,
+        "subperiod_ics": [
+          0.0101,
+          0.0241,
+          -0.0241,
+          0.0134
+        ],
+        "sign_stable": false,
+        "spread_bps": 2.68,
+        "spread_per_symbol_bps": {
+          "0": 3.95,
+          "1": 1.44,
+          "2": 2.65
+        },
+        "spread_clears_cost": false,
+        "edge": false
+      },
+      "train_info": {
+        "per_epoch": [
+          {
+            "epoch": 0,
+            "train_loss": 1.02153,
+            "val_ic": 0.01465,
+            "test_ic": 0.00894,
+            "secs": 823.0
+          },
+          {
+            "epoch": 1,
+            "train_loss": 1.00062,
+            "val_ic": 0.01796,
+            "test_ic": 0.01163,
+            "secs": 843.7
+          },
+          {
+            "epoch": 2,
+            "train_loss": 0.9995,
+            "val_ic": 0.01832,
+            "test_ic": -0.00421,
+            "secs": 868.8
+          }
+        ],
+        "best": {
+          "val_ic": 0.018316036597995574,
+          "epoch": 2,
+          "test_ic_at_best": -0.004211438068133468
+        }
+      }
+    }
+  }
+}

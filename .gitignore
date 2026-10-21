@@ -20,3 +20,6 @@ committee_heartbeat.txt
 
 # Agent / editor local state (not part of the bot)
 .openhands/
+
+# Backtest/experiment data caches (regenerable from build_dataset.py)
+reports/*/cache/
