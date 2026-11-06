@@ -1,0 +1,93 @@
+"""Async Alpaca data feed: daily bars + live quote updates.
+
+Two independent consumers subscribe to bars/quotes on demand:
+
+    bars  : get_daily_bar / last_bar(symbol)       -> latest close/timestamp per day
+    ticks : get_quotation(symbol, "last") / "size" -> realtime last size/timestamp (no auth)
+
+No pub/sub event callbacks; state is read via the getters above.
+"""
+from collections import defaultdict
+
+import websockets
+
+from config import BotConfig
+
+
+class DataFeed:
+    def __init__(self, config: BotConfig):
+        self.config = config
+        self._bars = defaultdict(dict)    # symbol -> {day: (close, ts)}
+        self._quotation = defaultdict(lambda: (0, 0))  # symbol -> (last, ts)
+        self._live = False
+
+    # ---- public API consumed by subscribers ----
+    def get_daily_bar(self, symbol: str, day: str):
+        return self._bars[symbol].get(day)
+
+    def last_bar(self, symbol: str):
+        return list(self._bars[symbol].values())[-1] if self._bars[symbol] else None
+
+    def get_quotation(self, symbol: str):
+        return dict(self._quotation[symbol])
+
+    def set_live(self, value: bool):
+        self._live = value
+
+    def is_live(self):
+        return self._live
+
+    # ---- async entry points ----
+    async def set_last_bar(self, symbol: str, day: str, close: float, ts: float):
+        self._bars[symbol][day] = (round(close, 4), ts)
+
+    async def set_bid(self, symbol: str, bid: float) -> None:
+        q = self._quotation[symbol]
+        self._quotation[symbol] = (bid, q[1])
+
+    async def set_ask(self, symbol: str, ask: float) -> None:
+        q = self._quotation[symbol]
+        self._quotation[symbol] = (q[0], ask)
+
+    async def on_quote(self, symbol: str) -> None:
+        self._quotation[symbol] = dict(self._quotation[symbol])
+
+    async def connect(self) -> None:
+        if not self.config.stream_token:
+            print("[feed] no PACA_STREAMING_TOKEN set — data stream unavailable (paper OK, paper-only on trades).")
+            return
+        try:
+            async with websockets.connect(
+                "wss://data.stream.alpaca.markets",
+                open_timeout=30,
+                close_timeout=10,
+            ) as ws:
+                await self._handle_data(ws)
+                self._live = True
+        except Exception as e:
+            print(f"[feed] stream connect failed: {e}")
+
+    async def _handle_data(self, ws):
+        import json
+
+        async for raw in ws:
+            try:
+                d = json.loads(raw)
+            except Exception:
+                continue
+            if not d.get("u") or "t" not in d:
+                continue
+            tag = d["t"][0]
+            tid = d["t"][1]
+            ts = d["ts"] / 1000
+            s = d["a"]["symbols"][0]["s"]
+            if tag == "T":  # trade
+                bid = float(d["b"][0]["bidPx"]) if d["b"] else self._quotation[s][0]
+                ask = float(d["a"][0]["askPx"]) if d["a"] else self._quotation[s][1]
+                # set_bid/skip
+                await self.set_bid(s, bid)
+                await self.set_ask(s, ask)
+            elif tag == "c":  # quote (skip — set_bid handles last)
+                pass
+            elif tag == "b":  # correction (ignore)
+                pass
