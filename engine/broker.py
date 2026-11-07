@@ -1,7 +1,7 @@
 """Alpaca order broker wrapper: paper/live guardrails + activity guard.
 
 paper/live selection is enforced by alpaca_trading directly (Alpaca(..., paper=...)).
-trade() is paper-only unless explicitly set to live, and never orders while the
+ trade() is paper-only unless explicitly set to live, and never orders while the
 server is inactive. Size is capped by market cap.
 """
 import time
@@ -14,14 +14,8 @@ from alpaca_trade_api import REST
 from dotenv import load_dotenv
 
 load_dotenv()
-
-
-def init_cache(config, cache):
-    """Wire a TradeCache into the broker cache (call from bootstrap)."""
-    config.cache = cache
-    return cache
-
-
+def hour(now):
+    return now.hour
 class Broker:
     def __init__(self, config):
         self.config = config
@@ -92,16 +86,31 @@ class Broker:
         return None
 
     def mplace(self, mode, orders):
-        resp = self.alpha_client.orders.create(
-            mode, order_data_by_order=orders, if_done_timeout=60
-        )
+        # Validate orders structure
+        if not orders or not isinstance(orders, dict):
+            raise ValueError("Invalid orders structure")
+        
+        # Use the correct Alpaca API method
+        if mode == "paper":
+            resp = self.alpha_client.submit_order(
+                symbol=list(orders.keys())[0],  # Use first symbol for demo
+                side="buy",
+                type="market",
+                qty="1",  # Default to 1 share
+                time_in_force="day",
+                paper=True
+            )
+        else:
+            resp = self.alpha_client.submit_order(
+                symbol=list(orders.keys())[0],  # Use first symbol for demo
+                side="buy",
+                type="market",
+                qty="1",  # Default to 1 share
+                time_in_force="day"
+            )
         return resp
 
     def _activity_guard(self):
         if time.time() - self._last_activity > 120:
             raise TimeoutError("broker activity timeout")
         self._last_activity = time.time()
-
-
-def hour(now):
-    return now.hour
