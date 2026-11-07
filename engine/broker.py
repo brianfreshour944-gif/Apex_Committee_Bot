@@ -53,7 +53,8 @@ class Broker:
             return None
         if symbols is None or len(symbols) == 0:
             return None
-        if datetime.now(tz=timedelta(hours=-4)).hour < 4 or datetime.now(tz=timedelta(hours=-4)).hour > 23:
+        et_tz = timezone(timedelta(hours=-4))
+        if datetime.now(tz=et_tz).hour < 4 or datetime.now(tz=et_tz).hour > 23:
             return None
         if self.config.cache is None:
             self.init_cache(TradeCache())
