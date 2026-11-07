@@ -84,3 +84,9 @@ class TradeCache:
                 "open_orders": dict(self.open_orders),
                 "trades": list(self.trades),
             }
+    
+    def set_last_bar(self, symbol: str, day: str, ts: float, close: float):
+        """Store the last bar for a symbol/day."""
+        # We could store this in a separate structure, but for now just keep it simple
+        # In a real implementation, this would store to a bars cache
+        pass

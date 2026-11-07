@@ -97,7 +97,7 @@ class Broker:
     def _activity_guard(self):
         if time.time() - self._last_activity > 120:
             raise TimeoutError("broker activity timeout")
-        self._activity_guard()
+        self._last_activity = time.time()
 
 
 def hour(now):

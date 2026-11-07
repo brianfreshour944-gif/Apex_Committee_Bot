@@ -13,6 +13,7 @@ class Bot:
         self.config = config
         self.strategy = None
         self.broker = self._make_broker(config)
+        self.feed = None
         self._data_task = None
         self._data_ws = None
         self._stop_requested = False
@@ -21,15 +22,39 @@ class Bot:
         from engine import broker as broker_engine  # noqa: F401
         return broker_engine.Broker(config)
 
+    def _make_feed(self, config):
+        from engine import feed as feed_engine
+        return feed_engine.DataFeed(config)
+
+    def _make_strategy(self, config, cache):
+        from engine import strategy as strategy_engine
+        return strategy_engine.Strategy(config, cache)
+
     @classmethod
     def load(cls, config):
         return cls(config)
 
-    async def connect(self):
-        from engine import feed as feed_engine
-
+    async def start(self):
+        """Initialize and start the bot components."""
+        from engine.db import TradeCache
+        
+        # Initialize cache
+        cache = TradeCache()
+        
+        # Initialize feed
+        self.feed = self._make_feed(self.config)
+        
+        # Initialize strategy with cache
+        self.strategy = self._make_strategy(self.config, cache)
+        
+        # Initialize broker with cache
+        self.broker.init_cache(cache)
+        
+        # Connect to data stream
+        await self.feed.connect()
+        
+        # Start data handling task
         self._data_task = asyncio.ensure_future(self._handle_datastream())
-        await self._data_task
 
     async def _handle_datastream(self):
         token = self.config.stream_token
@@ -62,12 +87,24 @@ class Bot:
             except Exception:
                 pass
             self._data_ws = None
+        if self._data_task:
+            self._data_task.cancel()
+            try:
+                await self._data_task
+            except asyncio.CancelledError:
+                pass
 
 
 async def run_until_server_stop(bot):
     """Wire the data stream and main loop; run until the user stops the server."""
     try:
-        await bot.connect()
+        await bot.start()
+        
+        # Update strategy with latest bars from feed
+        if bot.strategy and bot.feed:
+            symbols = ["AAPL", "MSFT", "GOOGL"]  # Default symbols to track
+            bot.strategy.update_last_bar(symbols, feed=bot.feed)
+            
         if bot.strategy is None:
             # No strategy wired yet: keep the server alive (idle) until an
             # explicit stop instead of exiting immediately. No trading occurs.
@@ -75,18 +112,32 @@ async def run_until_server_stop(bot):
                   "Press stop/Ctrl+C to shut down.")
             while not bot._stop_requested:
                 await asyncio.sleep(5)
+        
+        # Main trading loop
         while not bot._stop_requested:
-            pos = bot.strategy.get_strategy_positions() if bot.strategy else []
+            # Get positions from strategy
+            if bot.strategy:
+                pos = bot.strategy.get_strategy_positions() if hasattr(bot.strategy, 'get_strategy_positions') else []
+            else:
+                pos = []
+                
             if not pos:
-                break
-            entry = bot.strategy.get_strategy_symbols_and_entries(
-                (pos or [{}])[0], bot
-            )
-            if entry:
-                symbols, qty = entry
-                print(f"[loop] placing market buy: symbols={symbols} qty={qty}")
-                broker_call = bot.broker.call(symbols, qty)
-            await asyncio.sleep(1)
+                # Check for entry signals
+                if bot.strategy and bot.feed:
+                    symbols = ["AAPL", "MSFT", "GOOGL"]
+                    bot.strategy.update_last_bar(symbols, feed=bot.feed)
+                    
+                    # Try to enter positions
+                    for symbol in symbols:
+                        if bot.strategy.get_position_size(symbol) == 0:
+                            qty = bot.strategy.enter_one_symbol(symbol)
+                            if qty > 0:
+                                print(f"[loop] placing market buy: symbol={symbol} qty={qty}")
+                                resp = bot.broker.trade([symbol], qty)
+                                if resp:
+                                    print(f"[loop] order placed: {resp}")
+            
+            await asyncio.sleep(5)
     finally:
         await bot.stop()
 

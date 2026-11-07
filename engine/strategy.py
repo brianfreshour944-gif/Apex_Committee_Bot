@@ -22,8 +22,14 @@ class Strategy:
             return 0
         return pos["qty"]
 
-    def update_last_bar(self, symbols: list):
-        self.set_last_bar(symbols, day=self.bar_date(), ts=self.server_time(), close=self.close())
+    def update_last_bar(self, symbols: list, feed=None):
+        for symbol in symbols:
+            if feed:
+                bar = feed.last_bar(symbol)
+                if bar:
+                    self.set_last_bar(symbol, day=self.bar_date(), ts=bar[1], close=bar[0])
+                    return
+            self.set_last_bar(symbol, day=self.bar_date(), ts=self.server_time(), close=0.0)
 
     def bar_date(self):
         import datetime
@@ -52,7 +58,16 @@ class Strategy:
 
     def quantity_for(self, symbol: str):
         """Sizing proxy: 100 shares per US$1 of capital, capped by account."""
-        return int(round(self._capital()))
+        return int(round(self.get_available_cash()))
+
+    def get_strategy_positions(self):
+        """Return current positions from cache."""
+        return self.cache.all_positions()
+
+    def get_strategy_symbols_and_entries(self, pos, bot):
+        """Get symbols and quantities for entry - returns (symbols, qty) tuple or None."""
+        return None
 
     def get_available_cash(self):
-        return self._position_size()
+        # Return available cash from config or a default
+        return getattr(self.config, 'max_order_size_usd', 25.0)
