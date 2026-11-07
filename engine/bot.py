@@ -68,7 +68,14 @@ async def run_until_server_stop(bot):
     """Wire the data stream and main loop; run until the user stops the server."""
     try:
         await bot.connect()
-        while True:
+        if bot.strategy is None:
+            # No strategy wired yet: keep the server alive (idle) until an
+            # explicit stop instead of exiting immediately. No trading occurs.
+            print("[loop] no strategy wired — idling (no trading). "
+                  "Press stop/Ctrl+C to shut down.")
+            while not bot._stop_requested:
+                await asyncio.sleep(5)
+        while not bot._stop_requested:
             pos = bot.strategy.get_strategy_positions() if bot.strategy else []
             if not pos:
                 break
@@ -79,8 +86,7 @@ async def run_until_server_stop(bot):
                 symbols, qty = entry
                 print(f"[loop] placing market buy: symbols={symbols} qty={qty}")
                 broker_call = bot.broker.call(symbols, qty)
-            if bot._stop_requested:
-                break
             await asyncio.sleep(1)
     finally:
         await bot.stop()
+
