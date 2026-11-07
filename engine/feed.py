@@ -11,7 +11,7 @@ from collections import defaultdict
 
 import websockets
 
-from config import BotConfig
+from engine.config import BotConfig
 
 
 class DataFeed:

@@ -8,7 +8,9 @@ import time
 import threading
 from datetime import datetime, timezone, timedelta
 
-import alpaca_trading
+# NOTE: `import alpaca_trading` did not exist anywhere (no such PyPI package).
+# Minimal wiring fix only — order/trading logic is unchanged.
+from alpaca_trade_api import REST
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -24,9 +26,10 @@ class Broker:
     def __init__(self, config):
         self.config = config
         self.config.cache = None
-        self.alpha_client = alpaca_trading.Alpaca(
-            api_key=config.api_key,
+        self.alpha_client = REST(
+            key_id=config.api_key,
             secret_key=config.secret_key,
+            base_url=config.base_url,
         )
         self._cache = None
         self._last_activity = time.time()

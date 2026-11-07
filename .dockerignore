@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+*.log
+data/
+Dockerfile
+docker-compose.yml
+.dockerignore
+COOLIFY.md
+README.md

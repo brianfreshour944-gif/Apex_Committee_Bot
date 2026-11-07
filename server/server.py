@@ -11,6 +11,7 @@ import asyncio
 
 from engine.bot import Bot
 from engine.bot import run_until_server_stop
+from engine.config import BotConfig
 
 
 async def main(argv=None):
@@ -22,7 +23,10 @@ async def main(argv=None):
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
 
-    config = Bot.load(args.config)
+    # NOTE: was `Bot.load(args.config)` — built a Bot from the raw --config
+    # string/None instead of loading BotConfig from the .env path. Wiring fix
+    # only; startup order (config -> bot -> run loop) is unchanged.
+    config = BotConfig.load(args.config)
     print(f"[server] order mode: {config.order_mode}")
 
     bot = Bot.load(config)

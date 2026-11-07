@@ -53,6 +53,17 @@ class Bot:
                 self._data_task = None
 
 
+    async def stop(self):
+        """Lifecycle stop (called by server on loop end). No-op if not running."""
+        self._stop_requested = True
+        if self._data_ws is not None:
+            try:
+                await self._data_ws.close()
+            except Exception:
+                pass
+            self._data_ws = None
+
+
 async def run_until_server_stop(bot):
     """Wire the data stream and main loop; run until the user stops the server."""
     try:

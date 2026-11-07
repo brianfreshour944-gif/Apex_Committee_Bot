@@ -1,0 +1,33 @@
+# Coolify-compatible compose stack.
+# NOTE: no `version:` key (deprecated / rejected by newer compose + Coolify).
+# Environment variables are injected from Coolify's Environment Variables UI.
+# In Coolify choose "Docker Compose" as the build type; Coolify runs
+# `docker compose up` with this file.
+
+services:
+  alpaca-penny-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: alpaca-penny-bot:latest
+    container_name: alpaca-penny-bot
+    restart: unless-stopped
+    environment:
+      - PACA_API_KEY=${PACA_API_KEY:-paper_key}
+      - PACA_SECRET_KEY=${PACA_SECRET_KEY:-paper_secret}
+      # Live trading endpoint: https://api.alpaca.markets
+      - PACA_BASE_URL=${PACA_BASE_URL:-https://paper-api.alpaca.markets}
+      - PACA_STREAMING_TOKEN=${PACA_STREAMING_TOKEN:-}
+      - DEFAULT_ORDER_MODE=${DEFAULT_ORDER_MODE:-paper}
+      - MAX_ORDER_SIZE_USD=${MAX_ORDER_SIZE_USD:-25.00}
+    volumes:
+      # Persistent trade ledger (data/trades.jsonl) across deploys/restarts
+      - alpaca-bot-data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  alpaca-bot-data:
