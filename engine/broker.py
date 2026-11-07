@@ -58,33 +58,35 @@ class Broker:
             return None
         if self.config.cache is None:
             self.init_cache(TradeCache())
-        resp = self.mplace(
-            self.config.order_mode,
-            {
-                s: {
-                    "order_type": "market",
-                    "side": "buy", "qty": qty},
-            }
-        )
+        
+        orders = {}
+        for s in symbols:
+            orders[s] = {
+                "order_type": "market",
+                "side": "buy", "qty": qty}
+        
+        resp = self.mplace(self.config.order_mode, orders)
+        
         if resp.get("status") == "ACCEPTED":
-            self._cache.record_trade({
-                "type": self.config.order_mode,
-                "event": "TRADE", "ts": datetime.utcnow().isoformat(timespec="seconds"),
-                "acct": self.config.order_mode,
-                "order_id": resp["orders"][s]["id"],
-                "qty": qty, "symbol": s,
-                "cost": resp["orders"][s].get("cost"),
-                "avg_px": resp["orders"][s].get("avg_filled_px"),
-                "filled_qty": resp["orders"][s].get("filled_qty"),
-                "filled_px": resp["orders"][s].get("filled_px"),
-                "open_qty": resp["orders"][s].get("qty"),
-                "cum_qty": resp["orders"][s].get("filled_qty"),
-                "total": resp["cost"],
-                "status": resp["orders"][s].get("status"),
-                "last_filled_qty": resp["orders"][s].get("filled_qty"),
-                "last_filled_px": resp["orders"][s].get("filled_px"),
-                "cost": resp["orders"][s].get("cost"),
-            })
+            for s in symbols:
+                self._cache.record_trade({
+                    "type": self.config.order_mode,
+                    "event": "TRADE", "ts": datetime.utcnow().isoformat(timespec="seconds"),
+                    "acct": self.config.order_mode,
+                    "order_id": resp["orders"][s]["id"],
+                    "qty": qty, "symbol": s,
+                    "cost": resp["orders"][s].get("cost"),
+                    "avg_px": resp["orders"][s].get("avg_filled_px"),
+                    "filled_qty": resp["orders"][s].get("filled_qty"),
+                    "filled_px": resp["orders"][s].get("filled_px"),
+                    "open_qty": resp["orders"][s].get("qty"),
+                    "cum_qty": resp["orders"][s].get("filled_qty"),
+                    "total": resp["cost"],
+                    "status": resp["orders"][s].get("status"),
+                    "last_filled_qty": resp["orders"][s].get("filled_qty"),
+                    "last_filled_px": resp["orders"][s].get("filled_px"),
+                    "cost": resp["orders"][s].get("cost"),
+                })
             return resp
         print("FAILED order:", resp)
         return None
